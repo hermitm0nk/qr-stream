@@ -53,10 +53,17 @@ self.onmessage = (e: MessageEvent) => {
   }
 
   if (msg.type === 'frame') {
-    const imageData: ImageData = msg.imageData ?? msg.frameData;
+    let imageData: ImageData | null = msg.imageData ?? msg.frameData ?? null;
+    if (!imageData && msg.pixels && msg.width && msg.height) {
+      imageData = new ImageData(
+        new Uint8ClampedArray(msg.pixels),
+        msg.width,
+        msg.height,
+      );
+    }
     if (!imageData) return;
     try {
-      handleFrame(imageData);
+      handleFrame(imageData!);
     } catch (err: any) {
       // Don't crash worker on decode errors
       self.postMessage({ type: 'error', message: err.message ?? String(err) });

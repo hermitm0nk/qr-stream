@@ -355,8 +355,13 @@ export function ReceiverPage() {
       for (let i = 0; i < gifData.frames.length; i++) {
         if (!scanningRef.current) break;
         const rgba = renderGifFrame(gifData, i);
-        const imageData = new ImageData(rgba, gifData.width, gifData.height);
-        worker.postMessage({ type: 'frame', imageData });
+        // Send raw pixel buffer (ArrayBuffer) instead of ImageData to avoid
+        // structured clone issues with ImageData in some browsers.
+        const pixelBuf = rgba.buffer.slice(rgba.byteOffset, rgba.byteOffset + rgba.byteLength);
+        worker.postMessage(
+          { type: 'frame', pixels: pixelBuf, width: gifData.width, height: gifData.height },
+          [pixelBuf],
+        );
       }
 
       setStatus('GIF processed');
