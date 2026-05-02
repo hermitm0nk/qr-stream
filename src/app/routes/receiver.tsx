@@ -165,6 +165,8 @@ export function ReceiverPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const animRef = useRef<number>(0);
   const frameTimerRef = useRef<number>(0);
+  /** Ref used by rAF loop to avoid stale closure over state */
+  const scanningRef = useRef(false);
 
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState('');
@@ -281,13 +283,14 @@ export function ReceiverPage() {
       };
 
       setScanning(true);
+      scanningRef.current = true;
       setStatus('Scanning…');
 
-      // Start frame capture loop
+      // Start frame capture loop — uses scanningRef to avoid stale closures
       let lastCapture = 0;
-      const CAPTURE_INTERVAL = 150; // ms between capture attempts
+      const CAPTURE_INTERVAL = 150;
       const loop = (time: number) => {
-        if (!scanning) return;
+        if (!scanningRef.current) return;
         if (time - lastCapture >= CAPTURE_INTERVAL) {
           captureFrame();
           lastCapture = time;
@@ -298,11 +301,12 @@ export function ReceiverPage() {
     } catch (err: any) {
       setError(`Camera error: ${err.message ?? String(err)}`);
     }
-  }, [scanning]);
+  }, []);
 
   // ── Stop scanning ────────────────────────────────────────────────────────
   const stopScanning = useCallback(() => {
     setScanning(false);
+    scanningRef.current = false;
     cancelAnimationFrame(animRef.current);
 
     if (videoRef.current) {
