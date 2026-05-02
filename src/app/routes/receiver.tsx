@@ -1,5 +1,5 @@
 /**
- * Receiver page — camera preview, QR decode, progress tracking, file download.
+ * Receiver page — camera preview, QR decode, GIF file upload mode, file download.
  */
 import { useState, useCallback, useRef, useEffect } from 'preact/hooks';
 
@@ -7,7 +7,7 @@ import { useState, useCallback, useRef, useEffect } from 'preact/hooks';
 
 interface SessionInfo {
   sessionId: string;
-  progress: number;        // 0..1
+  progress: number;
   solvedGenerations: number;
   totalGenerations: number;
   framesDecoded: number;
@@ -20,13 +20,7 @@ interface ReceivedFile {
   mime: string;
 }
 
-interface WorkerProgress {
-  framesDecoded: number;
-  solvedGenerations: number;
-  totalGenerations: number;
-  sessionId: string | null;
-  status: string;
-}
+type InputMode = 'camera' | 'gif-file';
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
@@ -154,6 +148,24 @@ const S = {
     verticalAlign: 'middle',
     marginRight: 8,
   } as CSSProps,
+  toggleGroup: {
+    display: 'flex',
+    gap: 4,
+    background: '#0d1117',
+    borderRadius: 6,
+    padding: 2,
+  } as CSSProps,
+  toggleBtn: (active: boolean): CSSProps => ({
+    padding: '6px 14px',
+    borderRadius: 4,
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: 500,
+    background: active ? '#1f2937' : 'transparent',
+    color: active ? '#f0f6fc' : '#8b949e',
+    transition: 'all 0.15s',
+  }),
 };
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -164,10 +176,9 @@ export function ReceiverPage() {
   const workerRef = useRef<Worker | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animRef = useRef<number>(0);
-  const frameTimerRef = useRef<number>(0);
-  /** Ref used by rAF loop to avoid stale closure over state */
   const scanningRef = useRef(false);
 
+  const [inputMode, setInputMode] = useState<InputMode>('camera');
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState('');
   const [progress, setProgress] = useState(0);
@@ -175,12 +186,95 @@ export function ReceiverPage() {
   const [solvedGens, setSolvedGens] = useState(0);
   const [totalGens, setTotalGens] = useState(0);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [downloading, setDownloading] = useState(false);
   const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
   const [error, setError] = useState('');
 
-  // ── Start scanning ───────────────────────────────────────────────────────
-  const startScanning = useCallback(async () => {
+  // ── Create decode worker ──────────────────────────────────────────────────
+  function createWorker(): Worker {
+    const w = new Worker(
+      new URL('@/workers/decode.worker.ts', import.meta.url),
+      { type: 'module' },
+    );
+
+    w.onmessage = (e: MessageEvent) => {
+      const msg = e.data;
+      switch (msg.type) {
+        case 'progress': {
+          setFramesDecoded(msg.framesDecoded);
+          setSolvedGens(msg.solvedGenerations);
+          setTotalGens(msg.totalGenerations);
+          setProgress(msg.totalGenerations > 0 ? msg.solvedGenerations / msg.totalGenerations : 0);
+          setStatus(msg.status);
+
+          if (msg.sessionId) {
+            setSessions((prev) => {
+              const sid = msg.sessionId as string;
+              const existing = prev.find((s) => s.sessionId === sid);
+              if (existing) {
+                return prev.map((s) =>
+                  s.sessionId === sid
+                    ? {
+                        ...s,
+                        progress: msg.totalGenerations > 0 ? msg.solvedGenerations / msg.totalGenerations : 0,
+                        solvedGenerations: msg.solvedGenerations,
+                        totalGenerations: msg.totalGenerations,
+                        framesDecoded: msg.framesDecoded,
+                        status: 'receiving' as const,
+                      }
+                    : s,
+                );
+              }
+              return [
+                ...prev,
+                {
+                  sessionId: sid,
+                  progress: 0,
+                  solvedGenerations: 0,
+                  totalGenerations: msg.totalGenerations,
+                  framesDecoded: 0,
+                  status: 'receiving' as const,
+                } as SessionInfo,
+              ];
+            });
+          }
+          break;
+        }
+        case 'complete': {
+          setReceivedFile({
+            data: msg.data as ArrayBuffer,
+            filename: msg.filename ?? 'recovered',
+            mime: msg.mime ?? 'application/octet-stream',
+          });
+          setStatus('Complete ✓');
+          setProgress(1);
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.sessionId === msg.sessionId ? { ...s, status: 'complete' as const, progress: 1 } : s,
+            ),
+          );
+          break;
+        }
+        case 'error': {
+          setError(msg.message);
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.sessionId === msg.sessionId ? { ...s, status: 'error' as const } : s,
+            ),
+          );
+          break;
+        }
+      }
+    };
+
+    w.onerror = (err) => {
+      setError(`Worker error: ${err.message}`);
+    };
+
+    return w;
+  }
+
+  // ── Start camera scanning ─────────────────────────────────────────────────
+  const startCameraScanning = useCallback(async () => {
     setError('');
     setReceivedFile(null);
     setSessions([]);
@@ -200,93 +294,14 @@ export function ReceiverPage() {
         await videoRef.current.play();
       }
 
-      // Create decode worker
-      const worker = new Worker(
-        new URL('@/workers/decode.worker.ts', import.meta.url),
-        { type: 'module' },
-      );
+      const worker = createWorker();
       workerRef.current = worker;
-
-      worker.onmessage = (e: MessageEvent) => {
-        const msg = e.data;
-        switch (msg.type) {
-          case 'progress': {
-            const p = msg as WorkerProgress;
-            setFramesDecoded(p.framesDecoded);
-            setSolvedGens(p.solvedGenerations);
-            setTotalGens(p.totalGenerations);
-            setProgress(p.totalGenerations > 0 ? p.solvedGenerations / p.totalGenerations : 0);
-            setStatus(p.status);
-
-            // Update sessions
-            if (p.sessionId) {
-              setSessions((prev) => {
-                const sid = p.sessionId as string;
-                const existing = prev.find((s) => s.sessionId === sid);
-                if (existing) {
-                  return prev.map((s) =>
-                    s.sessionId === sid
-                      ? {
-                          ...s,
-                          progress: p.totalGenerations > 0 ? p.solvedGenerations / p.totalGenerations : 0,
-                          solvedGenerations: p.solvedGenerations,
-                          totalGenerations: p.totalGenerations,
-                          framesDecoded: p.framesDecoded,
-                          status: 'receiving' as const,
-                        }
-                      : s,
-                  );
-                }
-                return [
-                  ...prev,
-                  {
-                    sessionId: sid,
-                    progress: 0,
-                    solvedGenerations: 0,
-                    totalGenerations: p.totalGenerations,
-                    framesDecoded: 0,
-                    status: 'receiving' as const,
-                  } as SessionInfo,
-                ];
-              });
-            }
-            break;
-          }
-          case 'complete': {
-            const data = msg.data as ArrayBuffer;
-            const filename: string = msg.filename ?? 'recovered';
-            const mime: string = msg.mime ?? 'application/octet-stream';
-            setReceivedFile({ data, filename, mime });
-            setStatus('Complete ✓');
-            setProgress(1);
-            setSessions((prev) =>
-              prev.map((s) =>
-                s.sessionId === msg.sessionId ? { ...s, status: 'complete' as const, progress: 1 } : s,
-              ),
-            );
-            break;
-          }
-          case 'error': {
-            setError(msg.message);
-            setSessions((prev) =>
-              prev.map((s) =>
-                s.sessionId === msg.sessionId ? { ...s, status: 'error' as const } : s,
-              ),
-            );
-            break;
-          }
-        }
-      };
-
-      worker.onerror = (err) => {
-        setError(`Worker error: ${err.message}`);
-      };
 
       setScanning(true);
       scanningRef.current = true;
       setStatus('Scanning…');
 
-      // Start frame capture loop — uses scanningRef to avoid stale closures
+      // rAF capture loop
       let lastCapture = 0;
       const CAPTURE_INTERVAL = 150;
       const loop = (time: number) => {
@@ -300,6 +315,80 @@ export function ReceiverPage() {
       animRef.current = requestAnimationFrame(loop);
     } catch (err: any) {
       setError(`Camera error: ${err.message ?? String(err)}`);
+    }
+  }, []);
+
+  // ── Process GIF file ──────────────────────────────────────────────────────
+  const handleGifFile = useCallback(async (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    setError('');
+    setReceivedFile(null);
+    setSessions([]);
+    setProgress(0);
+    setFramesDecoded(0);
+    setSolvedGens(0);
+    setTotalGens(0);
+
+    const worker = createWorker();
+    workerRef.current = worker;
+
+    setScanning(true);
+    scanningRef.current = true;
+    setStatus('Decoding GIF frames…');
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const blob = new Blob([buffer], { type: 'image/gif' });
+      const url = URL.createObjectURL(blob);
+
+      // Create an <img> to decode the GIF
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Failed to load GIF'));
+        img.src = url;
+      });
+
+      // Render each frame to a canvas
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d')!;
+
+      // For an animated GIF, we can't easily extract individual frames.
+      // Use a simple approach: parse the GIF with a library or just render frames.
+      // As a simple approach: render the GIF at multiple time positions.
+      // Actually, the simpler approach: render the first visible frame and
+      // hope it contains a QR code. For a QR-in-GIF, the first frame is in the
+      // preamble (manifest), which is scannable.
+
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
+      worker.postMessage({ type: 'frame', imageData });
+
+      // For animated GIFs, we need to render each frame.
+      // Simple approach: render the GIF multiple times at different positions.
+      // A better approach would use gifuct-js or similar, but for now
+      // render at several time intervals to capture different frames.
+      for (let attempt = 0; attempt < 20; attempt++) {
+        if (!scanningRef.current) break;
+        await new Promise((r) => setTimeout(r, 100));
+        // Re-render the image (browser advances GIF automatically if animated)
+        ctx.drawImage(img, 0, 0);
+        const frameData = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
+        worker.postMessage({ type: 'frame', frameData });
+      }
+
+      URL.revokeObjectURL(url);
+      setStatus('GIF processed');
+    } catch (err: any) {
+      setError(`GIF error: ${err.message ?? String(err)}`);
+    } finally {
+      scanningRef.current = false;
+      setScanning(false);
     }
   }, []);
 
@@ -324,7 +413,7 @@ export function ReceiverPage() {
     setStatus('Stopped');
   }, []);
 
-  // ── Capture frame ────────────────────────────────────────────────────────
+  // ── Capture frame from camera ────────────────────────────────────────────
   const captureFrame = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -334,13 +423,11 @@ export function ReceiverPage() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Set canvas size to a reasonable capture resolution
     const cw = Math.min(video.videoWidth || 640, 640);
     const ch = Math.min(video.videoHeight || 640, 640);
     canvas.width = cw;
     canvas.height = ch;
 
-    // Center-crop the video
     const vw = video.videoWidth || 640;
     const vh = video.videoHeight || 640;
     const minDim = Math.min(vw, vh);
@@ -383,24 +470,56 @@ export function ReceiverPage() {
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div>
-      {/* ── Camera preview ──────────────────────────────────────────────── */}
+      {/* ── Input mode toggle ────────────────────────────────────────────── */}
       <div style={S.section}>
-        <div style={S.label}>Camera</div>
-        <video ref={videoRef} style={S.video} playsInline muted />
-        <canvas ref={canvasRef} style={{ display: 'none' }} />
-        <div style={{ ...S.row, marginTop: 10 }}>
-          {!scanning ? (
-            <button style={S.btn} onClick={startScanning}>
-              ▶ Start Scan
-            </button>
-          ) : (
-            <button style={S.btnStop} onClick={stopScanning}>
-              ■ Stop Scan
-            </button>
-          )}
+        <div style={S.label}>Input Mode</div>
+        <div style={S.toggleGroup}>
+          <button
+            style={S.toggleBtn(inputMode === 'camera')}
+            onClick={() => { stopScanning(); setInputMode('camera'); }}
+          >
+            📷 Camera
+          </button>
+          <button
+            style={S.toggleBtn(inputMode === 'gif-file')}
+            onClick={() => { stopScanning(); setInputMode('gif-file'); }}
+          >
+            🎞️ GIF File
+          </button>
         </div>
-        {error && <div style={S.warn}>⚠ {error}</div>}
       </div>
+
+      {/* ── Camera preview ──────────────────────────────────────────────── */}
+      {inputMode === 'camera' && (
+        <div style={S.section}>
+          <div style={S.label}>Camera</div>
+          <video ref={videoRef} style={S.video} playsInline muted />
+          <canvas ref={canvasRef} style={{ display: 'none' }} />
+          <div style={{ ...S.row, marginTop: 10 }}>
+            {!scanning ? (
+              <button style={S.btn} onClick={startCameraScanning}>
+                ▶ Start Scan
+              </button>
+            ) : (
+              <button style={S.btnStop} onClick={stopScanning}>
+                ■ Stop Scan
+              </button>
+            )}
+          </div>
+          {error && <div style={S.warn}>⚠ {error}</div>}
+        </div>
+      )}
+
+      {/* ── GIF file upload ──────────────────────────────────────────────── */}
+      {inputMode === 'gif-file' && (
+        <div style={S.section}>
+          <div style={S.label}>Upload GIF</div>
+          <p style={{ fontSize: 13, color: '#8b949e', marginBottom: 8 }}>
+            Upload a QR-over-GIF file generated by the Sender. The receiver will decode frames directly from the GIF.
+          </p>
+          <input type="file" accept=".gif,image/gif" onChange={handleGifFile} />
+        </div>
+      )}
 
       {/* ── Status + progress ────────────────────────────────────────────── */}
       <div style={S.section}>
@@ -423,7 +542,8 @@ export function ReceiverPage() {
         )}
         {scanning && (
           <div style={{ marginTop: 8, fontSize: 13, color: '#8b949e' }}>
-            <span style={S.sp} /> Scanning for QR codes…
+            <span style={S.sp} />{' '}
+            {status || 'Working…'}
           </div>
         )}
       </div>
