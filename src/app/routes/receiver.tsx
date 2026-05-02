@@ -2,6 +2,7 @@
  * Receiver page — camera preview, QR decode, GIF file upload mode, file download.
  */
 import { useState, useCallback, useRef, useEffect } from 'preact/hooks';
+import { parseGif, renderGifFrame } from '@/core/gif/gif_parser';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -337,52 +338,27 @@ export function ReceiverPage() {
 
     setScanning(true);
     scanningRef.current = true;
-    setStatus('Decoding GIF frames…');
+    setStatus('Parsing GIF frames…');
 
     try {
       const buffer = await file.arrayBuffer();
-      const blob = new Blob([buffer], { type: 'image/gif' });
-      const url = URL.createObjectURL(blob);
+      const bytes = new Uint8Array(buffer);
+      const gifData = parseGif(bytes);
 
-      // Create an <img> to decode the GIF
-      const img = new Image();
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve();
-        img.onerror = () => reject(new Error('Failed to load GIF'));
-        img.src = url;
-      });
-
-      // Render each frame to a canvas
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d')!;
-
-      // For an animated GIF, we can't easily extract individual frames.
-      // Use a simple approach: parse the GIF with a library or just render frames.
-      // As a simple approach: render the GIF at multiple time positions.
-      // Actually, the simpler approach: render the first visible frame and
-      // hope it contains a QR code. For a QR-in-GIF, the first frame is in the
-      // preamble (manifest), which is scannable.
-
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      ctx.drawImage(img, 0, 0);
-      const imageData = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
-      worker.postMessage({ type: 'frame', imageData });
-
-      // For animated GIFs, we need to render each frame.
-      // Simple approach: render the GIF multiple times at different positions.
-      // A better approach would use gifuct-js or similar, but for now
-      // render at several time intervals to capture different frames.
-      for (let attempt = 0; attempt < 20; attempt++) {
-        if (!scanningRef.current) break;
-        await new Promise((r) => setTimeout(r, 100));
-        // Re-render the image (browser advances GIF automatically if animated)
-        ctx.drawImage(img, 0, 0);
-        const frameData = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
-        worker.postMessage({ type: 'frame', frameData });
+      if (gifData.frames.length === 0) {
+        setError('No frames found in GIF');
+        return;
       }
 
-      URL.revokeObjectURL(url);
+      setStatus(`Processing ${gifData.frames.length} frames…`);
+
+      for (let i = 0; i < gifData.frames.length; i++) {
+        if (!scanningRef.current) break;
+        const rgba = renderGifFrame(gifData, i);
+        const imageData = new ImageData(rgba, gifData.width, gifData.height);
+        worker.postMessage({ type: 'frame', imageData });
+      }
+
       setStatus('GIF processed');
     } catch (err: any) {
       setError(`GIF error: ${err.message ?? String(err)}`);

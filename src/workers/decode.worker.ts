@@ -72,11 +72,8 @@ function handleFrame(imageData: ImageData): void {
   const decoded = decodeQRFromCanvas(imageData);
   if (!decoded) return; // No QR code found in this frame
 
-  // 2. Convert decoded string back to bytes (lossless for byte values 0-255)
-  const bytes = new Uint8Array(decoded.length);
-  for (let i = 0; i < decoded.length; i++) {
-    bytes[i] = decoded.charCodeAt(i) & 0xff;
-  }
+  // 2. Decoded is already Uint8Array (raw bytes from jsQR chunks)
+  const bytes = decoded;
 
   // 3. Parse packet
   let packet: Packet;

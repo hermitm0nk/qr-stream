@@ -24,98 +24,93 @@ function lzwDecode(data: Uint8Array, minCodeSize: number): Uint8Array {
   const clearCode = 1 << minCodeSize;
   const eoiCode = clearCode + 1;
   let codeSize = minCodeSize + 1;
-  let maxCode = (1 << codeSize) - 1;
 
   // Initialize dictionary with single-byte entries
-  const table: number[][] = [];
-  for (let i = 0; i < clearCode; i++) table.push([i]);
-  table.push([]); // clearCode
-  table.push([]); // eoiCode
+  const dict: number[][] = [];
+  for (let i = 0; i < clearCode; i++) dict.push([i]);
+  dict.push([]); // clearCode (index = clearCode)
+  dict.push([]); // eoiCode   (index = clearCode + 1)
 
   const output: number[] = [];
 
-  // Bit reading state
+  // Bit reading state (accumulates bytes from the flat sub-block data)
   let buf = 0;
   let bits = 0;
   let pos = 0;
 
-  function readCodeRaw(): number {
-    while (bits < codeSize) {
-      if (pos >= data.length) return eoiCode;
+  function readBits(n: number): number {
+    while (bits < n) {
+      if (pos >= data.length) return -1; // EOF
       buf |= data[pos]! << bits;
       pos++;
       bits += 8;
     }
-    const val = buf & ((1 << codeSize) - 1);
-    buf >>= codeSize;
-    bits -= codeSize;
+    const val = buf & ((1 << n) - 1);
+    buf >>>= n;
+    bits -= n;
     return val;
   }
 
-  let code = readCodeRaw();
-  if (code === eoiCode) return new Uint8Array(output);
-  if (code === clearCode) code = readCodeRaw();
-  if (code === eoiCode) return new Uint8Array(output);
+  function readCode(): number {
+    return readBits(codeSize);
+  }
 
-  // First code
-  let entry = table[code];
-  let prevEntry = entry;
-  if (entry) output.push(...entry);
+  let nextEntry = clearCode + 2; // first available dictionary slot
 
-  let nextEntry = clearCode + 2;
+  // Read all codes until EOI
+  let prevData: number[] = [];
+  let hasPrev = false;
 
   while (true) {
-    code = readCodeRaw();
-    if (code === eoiCode) break;
+    const code = readCode();
+    if (code === -1 || code === eoiCode) break;
 
     if (code === clearCode) {
-      // Reset
-      table.length = clearCode + 2;
-      for (let i = 0; i < clearCode; i++) table[i] = [i];
-      table[clearCode] = [];
-      table[clearCode + 1] = [];
+      // Reset dictionary
+      dict.length = clearCode + 2;
+      for (let i = 0; i < clearCode; i++) dict[i] = [i];
+      dict[clearCode] = [];
+      dict[clearCode + 1] = [];
       nextEntry = clearCode + 2;
       codeSize = minCodeSize + 1;
-      maxCode = (1 << codeSize) - 1;
-      buf = 0; bits = 0;
-
-      code = readCodeRaw();
-      if (code === eoiCode) break;
-      entry = table[code]!;
-      prevEntry = entry;
-      output.push(...entry);
+      // NOTE: Do NOT reset buf/bits — there may be leftover bits in the
+      // buffer from the same byte we consumed the clear code from.
+      // Resetting them would discard valid bit data and corrupt the stream.
+      hasPrev = false;
       continue;
     }
 
-    if (code < table.length) {
-      entry = table[code]!;
-      output.push(...entry);
-      // Add prevEntry + first byte of entry to dictionary
-      const newEntry = [...prevEntry, entry[0]!];
-      if (nextEntry <= 4095) {
-        table.push(newEntry);
-        nextEntry++;
-      }
-    } else if (code === table.length) {
+    let entry: number[];
+
+    if (code < dict.length) {
+      entry = dict[code]!;
+    } else if (code === dict.length) {
       // Special case: code == next available entry
-      const newEntry = [...prevEntry, prevEntry[0]!];
-      output.push(...newEntry);
-      if (nextEntry <= 4095) {
-        table.push(newEntry);
-        nextEntry++;
-      }
-      entry = newEntry;
+      // The output is prevData + first byte of prevData
+      if (!hasPrev) break;
+      entry = [...prevData, prevData[0]!];
     } else {
       break; // Invalid code
     }
 
-    // Increase code size if needed
-    if (nextEntry > maxCode && codeSize < 12) {
-      codeSize++;
-      maxCode = (1 << codeSize) - 1;
+    output.push(...entry);
+
+    // Add new dictionary entry: prevData + first byte of this entry
+    if (hasPrev) {
+      const newEntry = [...prevData, entry[0]!];
+      if (nextEntry <= 4095) {
+        dict.push(newEntry);
+        nextEntry++;
+      }
+
+      // Increase code size if needed
+      if (nextEntry > (1 << codeSize) - 1 && codeSize < 12) {
+        codeSize++;
+      }
     }
 
-    prevEntry = entry ?? prevEntry;
+    prevData = entry;
+    hasPrev = true;
   }
 
   return new Uint8Array(output);

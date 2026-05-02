@@ -54,9 +54,7 @@ describe('GIF roundtrip', () => {
       }
       const qr = decodeQRFromBuffer(gray, frame.width, frame.height);
       if (qr) {
-        const bytes = new Uint8Array(qr.length);
-        for (let j = 0; j < qr.length; j++) bytes[j] = qr.charCodeAt(j) & 0xff;
-        decoded.push(bytes);
+        decoded.push(qr);
       }
     }
     expect(decoded.length).toBeGreaterThan(0);
