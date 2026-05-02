@@ -506,6 +506,7 @@ describe('GenerationDecoder', () => {
 
 // ── QR Generation ──────────────────────────────────────────────────────────
 import { generateQRMatrix, getMaxByteCapacity, getMinVersion } from '@/core/qr/qr_encode';
+import { decodeQRFromBuffer } from '@/core/qr/qr_decode';
 
 describe('QR Generation', () => {
   it('generates a square matrix', () => {
@@ -572,6 +573,7 @@ describe('Frame Rasterizer', () => {
 
 // ── GIF Renderer ──────────────────────────────────────────────────────────
 import { createQRGif, estimateGifSize } from '@/core/gif/gif_render';
+import { parseGif, gifFrameToRgba } from '@/core/gif/gif_parser';
 
 describe('GIF Renderer', () => {
   it('createQRGif produces valid GIF header', () => {
@@ -804,7 +806,6 @@ describe('End-to-End', () => {
         solvedGens.set(g, gd.getSourceSymbols(g));
       }
       const payload = assemblePayload(solvedGens, manifest.totalGenerations, manifest.lastGenRealSize);
-      // Truncate to original size (after decompression)
       expect(payload.length).toBeGreaterThanOrEqual(manifest.originalSize);
     }
   });
