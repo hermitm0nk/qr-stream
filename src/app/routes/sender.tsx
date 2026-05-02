@@ -204,6 +204,7 @@ export function SenderPage() {
       mime = 'text/plain';
     } else {
       if (!file) { setError('Please select a file.'); return; }
+      if (file.size > 8 * 1024 * 1024) { setError('File too large. Maximum size is 8 MB.'); return; }
       data = await file.arrayBuffer();
       filename = file.name;
       mime = file.type || 'application/octet-stream';
@@ -307,7 +308,7 @@ export function SenderPage() {
   }, [gifResult, profileId, stats]);
 
   // ─── Compute warnings ──────────────────────────────────────────────────────
-  const showWarning = stats && stats.estimatedGifBytes > 5 * 1024 * 1024;
+  const showWarning = false;
 
   return (
     <div>
@@ -407,18 +408,9 @@ export function SenderPage() {
             <span style={S.infoValue}>{stats.frameCount}</span>
             <span style={S.infoLabel}>Generations</span>
             <span style={S.infoValue}>{stats.totalGenerations}</span>
-            <span style={S.infoLabel}>Estimated GIF size</span>
-            <span style={S.infoValue}>{formatBytes(stats.estimatedGifBytes)}</span>
-            <span style={S.infoLabel}>Estimated throughput</span>
-            <span style={S.infoValue}>
-              {estimateThroughput(stats.originalSize, stats.frameCount, profileId)}
-            </span>
+            <span style={S.infoLabel}>GIF size</span>
+            <span style={S.infoValue}>{gifResult ? formatBytes(gifResult.gifData.byteLength) : '…'}</span>
           </div>
-          {showWarning && (
-            <div style={S.warn}>
-              ⚠ Large GIF ({formatBytes(stats.estimatedGifBytes)}) — transfer may take several minutes.
-            </div>
-          )}
         </div>
       )}
     </div>

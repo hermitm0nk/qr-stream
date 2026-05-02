@@ -46,9 +46,9 @@ describe('Constants', () => {
       expect(p.maxPacketPayload).toBeGreaterThan(100);
     }
   });
-  it('Robust has highest overhead (K=24, R=12)', () => {
-    expect(PROFILES[ProfileId.ROBUST].k).toBe(24);
-    expect(PROFILES[ProfileId.ROBUST].r).toBe(12);
+  it('Robust has highest overhead (K=16, R=16)', () => {
+    expect(PROFILES[ProfileId.ROBUST].k).toBe(16);
+    expect(PROFILES[ProfileId.ROBUST].r).toBe(16);
   });
   it('createSessionId returns a bigint', () => {
     const id = createSessionId();

@@ -54,11 +54,11 @@ export enum Flags {
 
 /** QR profile identifiers. */
 export enum ProfileId {
-  /** Robust profile: QR V31, ECC Q, K=24, R=12. */
+  /** Robust profile: QR V20, ECC Q, K=16, R=16 (100% overhead, big modules). */
   ROBUST = 0,
-  /** Balanced profile: QR V35, ECC M, K=24, R=8. */
+  /** Balanced profile: QR V25, ECC Q, K=20, R=12 (60% overhead). */
   BALANCED = 1,
-  /** Fast profile: QR V40, ECC M, K=32, R=8. */
+  /** Fast profile: QR V35, ECC M, K=24, R=8 (33% overhead). */
   FAST = 2,
 }
 
@@ -86,28 +86,28 @@ export interface ProfileConfig {
 /** Lookup of all defined profiles by their ProfileId. */
 export const PROFILES: Record<ProfileId, ProfileConfig> = {
   [ProfileId.ROBUST]: {
-    qrVersion: 31,
+    qrVersion: 20,
     eccLevel: 'Q',
-    k: 24,
-    r: 12,
+    k: 16,
+    r: 16,
     frameDelay: 30,
-    maxPacketPayload: 1230,
+    maxPacketPayload: 450,
   },
   [ProfileId.BALANCED]: {
+    qrVersion: 25,
+    eccLevel: 'Q',
+    k: 20,
+    r: 12,
+    frameDelay: 20,
+    maxPacketPayload: 683,
+  },
+  [ProfileId.FAST]: {
     qrVersion: 35,
     eccLevel: 'M',
     k: 24,
     r: 8,
-    frameDelay: 20,
-    maxPacketPayload: 1770,
-  },
-  [ProfileId.FAST]: {
-    qrVersion: 40,
-    eccLevel: 'M',
-    k: 32,
-    r: 8,
     frameDelay: 15,
-    maxPacketPayload: 2290,
+    maxPacketPayload: 1777,
   },
 };
 
