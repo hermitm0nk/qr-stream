@@ -42,6 +42,9 @@ interface SessionState {
 // Worker-global state (keyed by sessionId.toString())
 const sessions = new Map<string, SessionState>();
 
+// Debug counter for tracking frame processing
+let totalFramesReceived = 0;
+
 // ─── Worker handler ──────────────────────────────────────────────────────────
 
 self.onmessage = (e: MessageEvent) => {
@@ -53,6 +56,10 @@ self.onmessage = (e: MessageEvent) => {
   }
 
   if (msg.type === 'frame') {
+    totalFramesReceived++;
+    if (totalFramesReceived % 5 === 0) {
+      self.postMessage({ type: 'error', message: `Worker received ${totalFramesReceived} frames total` });
+    }
     let imageData: ImageData | null = msg.imageData ?? msg.frameData ?? null;
     if (!imageData && msg.pixels && msg.width && msg.height) {
       imageData = new ImageData(
@@ -66,7 +73,7 @@ self.onmessage = (e: MessageEvent) => {
       handleFrame(imageData!);
     } catch (err: any) {
       // Don't crash worker on decode errors
-      self.postMessage({ type: 'error', message: err.message ?? String(err) });
+      self.postMessage({ type: 'error', message: `Frame error: ${err.message ?? String(err)}` });
     }
     return;
   }
@@ -77,7 +84,10 @@ self.onmessage = (e: MessageEvent) => {
 function handleFrame(imageData: ImageData): void {
   // 1. Decode QR code from image
   const decoded = decodeQRFromCanvas(imageData);
-  if (!decoded) return; // No QR code found in this frame
+  if (!decoded) {
+    self.postMessage({ type: 'error', message: 'QR decode returned null for frame' });
+    return; // No QR code found in this frame
+  }
 
   // 2. Decoded is already Uint8Array (raw bytes from jsQR chunks)
   const bytes = decoded;
