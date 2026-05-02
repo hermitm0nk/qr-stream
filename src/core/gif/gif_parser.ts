@@ -345,10 +345,26 @@ export function parseGif(buffer: Uint8Array): GifData {
  * @returns RGBA pixel data suitable for QR decoding
  */
 export function gifFrameToRgba(frame: GifFrame): Uint8ClampedArray {
-  const rgba = new Uint8ClampedArray(frame.width * frame.height * 4);
+  const pixelCount = frame.width * frame.height;
+  const rgba = new Uint8ClampedArray(pixelCount * 4);
   const pal = frame.palette;
 
-  for (let i = 0; i < frame.data.length; i++) {
+  // Initialize all pixels to palette index 0 (typically white) to avoid
+  // leaving any pixels at (0,0,0,0) from Uint8ClampedArray defaults.
+  // Fallback: if palette is empty, use white.
+  const bgR = pal.length > 0 ? pal[0]![0]! : 255;
+  const bgG = pal.length > 0 ? pal[0]![1]! : 255;
+  const bgB = pal.length > 0 ? pal[0]![2]! : 255;
+  for (let i = 0; i < pixelCount; i++) {
+    const off = i * 4;
+    rgba[off] = bgR;
+    rgba[off + 1] = bgG;
+    rgba[off + 2] = bgB;
+    rgba[off + 3] = 255;
+  }
+
+  // Override with actual palette data
+  for (let i = 0; i < frame.data.length && i < pixelCount; i++) {
     const idx = frame.data[i]!;
     const off = i * 4;
     if (idx < pal.length) {
