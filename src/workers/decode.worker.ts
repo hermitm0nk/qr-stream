@@ -1,10 +1,6 @@
 /**
- * Decode worker — receives camera frames, decodes QR codes, parses
- * packets, routes to GenerationDecoder, tracks progress, and signals
- * when reconstruction is complete.
- *
- * Maintains state between messages (generation decoders, dedup sets,
- * manifest fragments).
+ * Decode worker — receives camera/GIF frames, decodes QR codes, parses
+ * packets, routes to GenerationDecoder, and signals completion.
  *
  * @module
  */
@@ -13,36 +9,30 @@ import { inflateSync } from 'fflate';
 import { decodeQRFromCanvas } from '@/core/qr/qr_decode';
 import { parsePacket } from '@/core/protocol/packet';
 import type { Packet } from '@/core/protocol/packet';
-import {
-  PacketType,
-  PROFILES,
-} from '@/core/protocol/constants';
-import type { ProfileConfig } from '@/core/protocol/constants';
-import { defragmentManifest } from '@/core/protocol/manifest';
-import type { ManifestData } from '@/core/protocol/manifest';
+import { PacketType, K, MAX_PAYLOAD_SIZE } from '@/core/protocol/constants';
 import { GenerationDecoder } from '@/core/fec/rlnc_decoder';
 
 // ─── Session state ───────────────────────────────────────────────────────────
 
 interface SessionState {
-  sessionKey: string;
-  manifest: ManifestData | null;
-  manifestFragments: Uint8Array[];
-  decoder: GenerationDecoder | null;
+  sessionId: number;
+  decoder: GenerationDecoder;
   dedup: Set<string>;
   receivedPackets: number;
   solvedGenerations: Set<number>;
+  totalGenerations: number;
+  dataLength: number;
+  isText: boolean;
+  isCompressed: boolean;
+  completed: boolean;
   stats: {
     framesDecoded: number;
     framesWithQR: number;
   };
-  profile: ProfileConfig | null;
-  /** Set to true once reconstruction is done so late frames are ignored. */
-  completed: boolean;
 }
 
-// Worker-global state (keyed by sessionId.toString())
-const sessions = new Map<string, SessionState>();
+// Worker-global state (keyed by sessionId)
+const sessions = new Map<number, SessionState>();
 
 // ─── Worker handler ──────────────────────────────────────────────────────────
 
@@ -70,7 +60,7 @@ self.onmessage = (e: MessageEvent) => {
     }
     if (!imageData) return;
     try {
-      handleFrame(imageData!);
+      handleFrame(imageData);
     } catch (err: any) {
       self.postMessage({ type: 'error', message: `Frame error: ${err.message ?? String(err)}` });
     }
@@ -81,227 +71,173 @@ self.onmessage = (e: MessageEvent) => {
 // ─── Frame handling ──────────────────────────────────────────────────────────
 
 function handleFrame(imageData: ImageData): void {
-  // 1. Decode QR code from image
   const decoded = decodeQRFromCanvas(imageData);
-  if (!decoded) return; // No QR code found in this frame
+  if (!decoded) return;
 
-  // 2. Decoded is already Uint8Array (raw bytes from jsQR chunks)
   const bytes = decoded;
 
-  // 3. Parse packet
   let packet: Packet;
   try {
     packet = parsePacket(bytes);
   } catch {
-    return; // Invalid packet, skip silently
+    return;
   }
 
   const h = packet.header;
-  const sessionKey = h.sessionId.toString();
+  const sid = h.sessionId;
 
-  // 4. Get or create session state
-  let state = sessions.get(sessionKey);
+  // Get or create session state
+  let state = sessions.get(sid);
   if (!state) {
     state = {
-      sessionKey,
-      manifest: null,
-      manifestFragments: [],
-      decoder: null,
+      sessionId: sid,
+      decoder: new GenerationDecoder(K, MAX_PAYLOAD_SIZE, sid, 0),
       dedup: new Set(),
       receivedPackets: 0,
       solvedGenerations: new Set(),
-      stats: { framesDecoded: 0, framesWithQR: 0 },
-      profile: null,
+      totalGenerations: h.totalGenerations,
+      dataLength: h.dataLength,
+      isText: (h.flags & 1) !== 0,
+      isCompressed: (h.flags & 2) !== 0,
       completed: false,
+      stats: { framesDecoded: 0, framesWithQR: 0 },
     };
-    sessions.set(sessionKey, state);
+    sessions.set(sid, state);
   }
 
-  // If this session is already reconstructed, ignore late frames
   if (state.completed) return;
+
+  // Update metadata from header (in case first packet was incomplete)
+  state.totalGenerations = h.totalGenerations;
+  state.dataLength = h.dataLength;
+  state.isText = (h.flags & 1) !== 0;
+  state.isCompressed = (h.flags & 2) !== 0;
 
   state.stats.framesDecoded++;
 
-  // 5. Dedup: skip already-seen (sessionId:generationIndex:packetType:symbolIndex)
-  // Include packetType so manifest fragments don't collide with data symbols.
-  const dedupKey = `${sessionKey}:${h.generationIndex}:${h.packetType}:${h.symbolIndex}`;
+  // Dedup: sessionId:generationIndex:packetType:symbolIndex
+  const dedupKey = `${sid}:${h.generationIndex}:${h.packetType}:${h.symbolIndex}`;
   if (state.dedup.has(dedupKey)) return;
   state.dedup.add(dedupKey);
   state.stats.framesWithQR++;
 
-  // 6. Route by packet type
-  if (h.packetType === PacketType.MANIFEST) {
-    handleManifestPacket(state, bytes);
-  } else if (
-    h.packetType === PacketType.DATA_SYSTEMATIC ||
-    h.packetType === PacketType.DATA_CODED
-  ) {
-    handleDataPacket(state, packet);
-  }
-
-  // If reconstruction just completed, don't send a trailing progress message
-  if (state.completed) return;
-
-  // 7. Report progress back to main thread
-  reportProgress(state);
-}
-
-// ─── Manifest packet — accumulate fragments, defrag when complete ────────────
-
-function handleManifestPacket(state: SessionState, packetBytes: Uint8Array): void {
-  state.manifestFragments.push(packetBytes);
-  if (state.manifest) return; // Already have full manifest
-
-  try {
-    const manifest = defragmentManifest(state.manifestFragments);
-    state.manifest = manifest;
-    state.profile = PROFILES[manifest.qrProfile];
-
-    // Create GenerationDecoder with manifest parameters
-    // sessionId is bigint; narrow to 32-bit number for RLNC
-    const sessionIdNum = Number(manifest.sessionId & BigInt('0xFFFFFFFF'));
-    state.decoder = new GenerationDecoder(
-      manifest.generationK,
-      manifest.packetPayloadSize,
-      sessionIdNum,
-      0, // codingSeed — matches encoder default
-    );
-  } catch {
-    // Not all fragments collected yet; that's expected
-  }
-}
-
-// ─── Data packet — feed to generation decoder ────────────────────────────────
-
-function handleDataPacket(state: SessionState, packet: Packet): void {
-  if (!state.decoder || !state.manifest) return;
-
-  const h = packet.header;
+  // Feed to decoder
   const gen = h.generationIndex;
-  const decoder = state.decoder;
-
   let accepted = false;
 
   if (h.packetType === PacketType.DATA_SYSTEMATIC) {
-    // Systematic: coefficient vector has a single 1 at sourceIndex
-    accepted = decoder.addSystematicSymbol(gen, packet.payload, h.symbolIndex);
+    accepted = state.decoder.addSystematicSymbol(gen, packet.payload, h.symbolIndex);
   } else {
-    // Coded: derive coefficients from codedSymbolIndex (stored in symbolIndex)
-    accepted = decoder.addCodedSymbol(gen, packet.payload, h.symbolIndex);
+    accepted = state.decoder.addCodedSymbol(gen, packet.payload, h.symbolIndex);
   }
 
   if (accepted) {
     state.receivedPackets++;
 
-    if (decoder.isSolved(gen)) {
+    if (state.decoder.isSolved(gen)) {
       state.solvedGenerations.add(gen);
 
-      // Check if all generations solved
-      if (state.solvedGenerations.size >= state.manifest.totalGenerations) {
+      if (state.solvedGenerations.size >= state.totalGenerations) {
         reconstructData(state);
+        if (state.completed) return;
       }
     }
   }
+
+  reportProgress(state);
 }
 
 // ─── Reconstruct original data from all source symbols ──────────────────────
 
 function reconstructData(state: SessionState): void {
-  const manifest = state.manifest!;
-  const decoder = state.decoder!;
+  const decoder = state.decoder;
 
-  // Accumulate preprocessed data from each generation's source symbols
+  // Collect preprocessed data from each generation's source symbols
   const preprocessedParts: Uint8Array[] = [];
-  const payloadSize = manifest.packetPayloadSize;
-  const k = manifest.generationK;
 
-  for (let gen = 0; gen < manifest.totalGenerations; gen++) {
+  for (let gen = 0; gen < state.totalGenerations; gen++) {
     const symbols = decoder.getSourceSymbols(gen);
     if (!symbols) {
       self.postMessage({
         type: 'error',
-        sessionId: state.sessionKey,
+        sessionId: state.sessionId,
         message: `Generation ${gen} not solved — reconstruction aborted`,
       });
       return;
     }
-
-    // Only take the real symbols (not padding)
-    const isLastGen = gen === manifest.totalGenerations - 1;
-    const realCount = isLastGen ? manifest.lastGenRealSize : k;
-
-    for (let i = 0; i < realCount; i++) {
-      const sym = symbols[i]!;
-      preprocessedParts.push(new Uint8Array(sym)); // copy
+    for (const sym of symbols) {
+      preprocessedParts.push(new Uint8Array(sym));
     }
   }
 
-  // Concatenate parts, respecting exact preprocessed size
-  const totalSize = manifest.preprocessedSize;
+  // Concatenate and trim to exact dataLength
+  const totalSize = preprocessedParts.reduce((s, p) => s + p.length, 0);
   const combined = new Uint8Array(totalSize);
   let offset = 0;
   for (const part of preprocessedParts) {
-    const remaining = totalSize - offset;
-    if (remaining <= 0) break;
-    const len = Math.min(part.length, remaining);
-    combined.set(part.subarray(0, len), offset);
-    offset += len;
+    combined.set(part, offset);
+    offset += part.length;
   }
+  const trimmed = combined.slice(0, state.dataLength);
 
-  // Handle compression
+  // Decompress if needed
   let finalData: Uint8Array;
-  if (manifest.compressionCodec === 'deflate-raw') {
+  if (state.isCompressed) {
     try {
-      finalData = inflateSync(combined);
+      finalData = inflateSync(trimmed);
     } catch (err) {
       self.postMessage({
         type: 'error',
-        sessionId: state.sessionKey,
+        sessionId: state.sessionId,
         message: 'Decompression failed — data may be corrupted',
       });
       return;
     }
   } else {
-    finalData = combined;
+    finalData = trimmed;
   }
 
-  // Determine output filename
-  const filename = manifest.originalFilename || `recovered-${state.sessionKey.slice(0, 8)}`;
-
-  // Signal completion — use transferable
-  self.postMessage(
-    {
+  if (state.isText) {
+    const text = new TextDecoder().decode(finalData);
+    self.postMessage({
       type: 'complete',
-      sessionId: state.sessionKey,
-      data: finalData.buffer,
-      filename,
-      mime: manifest.mimeType,
-    },
-    { transfer: [finalData.buffer as ArrayBuffer] },
-  );
+      sessionId: state.sessionId,
+      isText: true,
+      text,
+    });
+  } else {
+    self.postMessage(
+      {
+        type: 'complete',
+        sessionId: state.sessionId,
+        isText: false,
+        data: finalData.buffer,
+        filename: `recovered-${state.sessionId.toString(16).padStart(8, '0')}`,
+        mime: 'application/octet-stream',
+      },
+      { transfer: [finalData.buffer as ArrayBuffer] },
+    );
+  }
 
-  // Mark session completed so late frames are silently ignored
   state.completed = true;
 }
 
 // ─── Progress reporting ──────────────────────────────────────────────────────
 
 function reportProgress(state: SessionState): void {
-  const totalGens = state.manifest?.totalGenerations ?? 0;
+  const totalGens = state.totalGenerations;
   const solvedGens = state.solvedGenerations.size;
 
   self.postMessage({
     type: 'progress',
-    sessionId: state.sessionKey,
+    sessionId: state.sessionId,
     framesDecoded: state.stats.framesDecoded,
     framesWithQR: state.stats.framesWithQR,
     receivedPackets: state.receivedPackets,
     solvedGenerations: solvedGens,
     totalGenerations: totalGens,
-    status: state.manifest
-      ? solvedGens >= totalGens
-        ? 'Reconstructing…'
-        : `Receiving (${solvedGens}/${totalGens} gens)`
-      : 'Receiving manifest…',
+    status: totalGens > 0
+      ? `Receiving (${solvedGens}/${totalGens} gens)`
+      : 'Receiving…',
   });
 }

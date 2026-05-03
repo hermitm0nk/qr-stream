@@ -1,5 +1,6 @@
 /**
- * Receiver page — camera preview, QR decode, GIF file upload mode, file download.
+ * Receiver page — camera preview, QR decode, GIF file upload mode,
+ * file download, and text display.
  */
 import { useState, useCallback, useRef, useEffect } from 'preact/hooks';
 import { parseGif, renderGifFrame } from '@/core/gif/gif_parser';
@@ -22,8 +23,6 @@ interface ReceivedFile {
 }
 
 type InputMode = 'camera' | 'gif-file';
-
-// ─── Styles ──────────────────────────────────────────────────────────────────
 
 type CSSProps = Record<string, string | number>;
 
@@ -68,15 +67,6 @@ const S = {
     padding: '10px 24px',
     fontSize: 15,
     fontWeight: 600,
-    cursor: 'pointer',
-  } as CSSProps,
-  btnSecondary: {
-    background: '#21262d',
-    color: '#c9d1d9',
-    border: '1px solid #30363d',
-    borderRadius: 6,
-    padding: '10px 24px',
-    fontSize: 15,
     cursor: 'pointer',
   } as CSSProps,
   video: {
@@ -167,9 +157,22 @@ const S = {
     color: active ? '#f0f6fc' : '#8b949e',
     transition: 'all 0.15s',
   }),
+  textarea: {
+    width: '100%',
+    boxSizing: 'border-box' as const,
+    background: '#0d1117',
+    color: '#c9d1d9',
+    border: '1px solid #30363d',
+    borderRadius: 6,
+    padding: 12,
+    fontSize: 14,
+    fontFamily: 'monospace',
+    resize: 'vertical' as const,
+    minHeight: 120,
+  } as CSSProps,
 };
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── Component ───────────────────────────────────────────────────────────────────
 
 export function ReceiverPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -188,9 +191,10 @@ export function ReceiverPage() {
   const [totalGens, setTotalGens] = useState(0);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
+  const [receivedText, setReceivedText] = useState('');
   const [error, setError] = useState('');
 
-  // ── Create decode worker ──────────────────────────────────────────────────
+  // ── Create decode worker ───────────────────────────────────────────────
   function createWorker(): Worker {
     const w = new Worker(
       new URL('@/workers/decode.worker.ts', import.meta.url),
@@ -207,9 +211,9 @@ export function ReceiverPage() {
           setProgress(msg.totalGenerations > 0 ? msg.solvedGenerations / msg.totalGenerations : 0);
           setStatus(msg.status);
 
-          if (msg.sessionId) {
+          if (msg.sessionId !== undefined) {
+            const sid = String(msg.sessionId);
             setSessions((prev) => {
-              const sid = msg.sessionId as string;
               const existing = prev.find((s) => s.sessionId === sid);
               if (existing) {
                 return prev.map((s) =>
@@ -241,16 +245,22 @@ export function ReceiverPage() {
           break;
         }
         case 'complete': {
-          setReceivedFile({
-            data: msg.data as ArrayBuffer,
-            filename: msg.filename ?? 'recovered',
-            mime: msg.mime ?? 'application/octet-stream',
-          });
+          if (msg.isText) {
+            setReceivedText(msg.text);
+            setReceivedFile(null);
+          } else {
+            setReceivedFile({
+              data: msg.data as ArrayBuffer,
+              filename: msg.filename ?? 'recovered',
+              mime: msg.mime ?? 'application/octet-stream',
+            });
+            setReceivedText('');
+          }
           setStatus('Complete ✓');
           setProgress(1);
           setSessions((prev) =>
             prev.map((s) =>
-              s.sessionId === msg.sessionId ? { ...s, status: 'complete' as const, progress: 1 } : s,
+              s.sessionId === String(msg.sessionId) ? { ...s, status: 'complete' as const, progress: 1 } : s,
             ),
           );
           break;
@@ -259,7 +269,7 @@ export function ReceiverPage() {
           setError(msg.message);
           setSessions((prev) =>
             prev.map((s) =>
-              s.sessionId === msg.sessionId ? { ...s, status: 'error' as const } : s,
+              s.sessionId === String(msg.sessionId) ? { ...s, status: 'error' as const } : s,
             ),
           );
           break;
@@ -274,10 +284,11 @@ export function ReceiverPage() {
     return w;
   }
 
-  // ── Start camera scanning ─────────────────────────────────────────────────
+  // ── Start camera scanning ────────────────────────────────────────────
   const startCameraScanning = useCallback(async () => {
     setError('');
     setReceivedFile(null);
+    setReceivedText('');
     setSessions([]);
     setProgress(0);
     setFramesDecoded(0);
@@ -286,7 +297,7 @@ export function ReceiverPage() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 640 } },
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 1280 } },
         audio: false,
       });
       streamRef.current = stream;
@@ -302,7 +313,6 @@ export function ReceiverPage() {
       scanningRef.current = true;
       setStatus('Scanning…');
 
-      // rAF capture loop
       let lastCapture = 0;
       const CAPTURE_INTERVAL = 150;
       const loop = (time: number) => {
@@ -319,7 +329,7 @@ export function ReceiverPage() {
     }
   }, []);
 
-  // ── Process GIF file ──────────────────────────────────────────────────────
+  // ── Process GIF file ───────────────────────────────────────────────────
   const handleGifFile = useCallback(async (e: Event) => {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
@@ -327,6 +337,7 @@ export function ReceiverPage() {
 
     setError('');
     setReceivedFile(null);
+    setReceivedText('');
     setSessions([]);
     setProgress(0);
     setFramesDecoded(0);
@@ -355,8 +366,6 @@ export function ReceiverPage() {
       for (let i = 0; i < gifData.frames.length; i++) {
         if (!scanningRef.current) break;
         const rgba = renderGifFrame(gifData, i);
-        // Send raw pixel buffer (ArrayBuffer) instead of ImageData to avoid
-        // structured clone issues with ImageData in some browsers.
         const pixelBuf = rgba.buffer.slice(rgba.byteOffset, rgba.byteOffset + rgba.byteLength);
         worker.postMessage(
           { type: 'frame', pixels: pixelBuf, width: gifData.width, height: gifData.height },
@@ -373,7 +382,7 @@ export function ReceiverPage() {
     }
   }, []);
 
-  // ── Stop scanning ────────────────────────────────────────────────────────
+  // ── Stop scanning ─────────────────────────────────────────────────────
   const stopScanning = useCallback(() => {
     setScanning(false);
     scanningRef.current = false;
@@ -394,7 +403,7 @@ export function ReceiverPage() {
     setStatus('Stopped');
   }, []);
 
-  // ── Capture frame from camera ────────────────────────────────────────────
+  // ── Capture frame from camera (with 3× digital zoom crop) ────────────────
   const captureFrame = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -412,16 +421,19 @@ export function ReceiverPage() {
     const vw = video.videoWidth || 640;
     const vh = video.videoHeight || 640;
     const minDim = Math.min(vw, vh);
-    const sx = (vw - minDim) / 2;
-    const sy = (vh - minDim) / 2;
 
-    ctx.drawImage(video, sx, sy, minDim, minDim, 0, 0, cw, ch);
+    // 3× digital zoom: crop center 1/3 of the frame
+    const cropSize = minDim / 3;
+    const sx = (vw - cropSize) / 2;
+    const sy = (vh - cropSize) / 2;
+
+    ctx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, cw, ch);
     const imageData = ctx.getImageData(0, 0, cw, ch);
 
     worker.postMessage({ type: 'frame', imageData });
   }, []);
 
-  // ── Download recovered file ──────────────────────────────────────────────
+  // ── Download recovered file ─────────────────────────────────────────────
   const handleDownload = useCallback(() => {
     if (!receivedFile) return;
     const blob = new Blob([receivedFile.data], { type: receivedFile.mime });
@@ -435,7 +447,7 @@ export function ReceiverPage() {
     URL.revokeObjectURL(url);
   }, [receivedFile]);
 
-  // ── Cleanup on unmount ───────────────────────────────────────────────────
+  // ── Cleanup on unmount ───────────────────────────────────────────────
   useEffect(() => {
     return () => {
       cancelAnimationFrame(animRef.current);
@@ -448,10 +460,10 @@ export function ReceiverPage() {
     };
   }, []);
 
-  // ── Render ───────────────────────────────────────────────────────────────
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div>
-      {/* ── Input mode toggle ────────────────────────────────────────────── */}
+      {/* ── Input mode toggle ───────────────────────────────────────────────── */}
       <div style={S.section}>
         <div style={S.label}>Input Mode</div>
         <div style={S.toggleGroup}>
@@ -470,7 +482,7 @@ export function ReceiverPage() {
         </div>
       </div>
 
-      {/* ── Camera preview ──────────────────────────────────────────────── */}
+      {/* ── Camera preview ────────────────────────────────────────────────── */}
       {inputMode === 'camera' && (
         <div style={S.section}>
           <div style={S.label}>Camera</div>
@@ -487,23 +499,26 @@ export function ReceiverPage() {
               </button>
             )}
           </div>
+          <p style={{ fontSize: 12, color: '#8b949e', marginTop: 6 }}>
+            3× digital zoom is applied automatically to the center of the frame.
+          </p>
           {error && <div style={S.warn}>⚠ {error}</div>}
         </div>
       )}
 
-      {/* ── GIF file upload ──────────────────────────────────────────────── */}
+      {/* ── GIF file upload ───────────────────────────────────────────────── */}
       {inputMode === 'gif-file' && (
         <div style={S.section}>
           <div style={S.label}>Upload GIF</div>
           <p style={{ fontSize: 13, color: '#8b949e', marginBottom: 8 }}>
-            Upload a QR-over-GIF file generated by the Sender. The receiver will decode frames directly from the GIF.
+            Upload a QR-over-GIF file generated by the Sender.
           </p>
           <input type="file" accept=".gif,image/gif" onChange={handleGifFile} />
           {error && <div style={{ ...S.warn, marginTop: 8 }}>⚠ {error}</div>}
         </div>
       )}
 
-      {/* ── Status + progress ────────────────────────────────────────────── */}
+      {/* ── Status + progress ────────────────────────────────────────────────── */}
       <div style={S.section}>
         <div style={S.label}>Status</div>
         <div style={{ ...S.row, gap: 16 }}>
@@ -530,7 +545,7 @@ export function ReceiverPage() {
         )}
       </div>
 
-      {/* ── Sessions table ───────────────────────────────────────────────── */}
+      {/* ── Sessions table ─────────────────────────────────────────────────────── */}
       {sessions.length > 0 && (
         <div style={S.section}>
           <div style={S.label}>Sessions</div>
@@ -546,11 +561,7 @@ export function ReceiverPage() {
             <tbody>
               {sessions.map((s) => (
                 <tr key={s.sessionId}>
-                  <td style={S.td}>
-                    {s.sessionId.length > 16
-                      ? `${s.sessionId.slice(0, 16)}…`
-                      : s.sessionId}
-                  </td>
+                  <td style={S.td}>{s.sessionId}</td>
                   <td style={S.td}>
                     <div
                       style={{
@@ -580,7 +591,19 @@ export function ReceiverPage() {
         </div>
       )}
 
-      {/* ── Download recovered file ──────────────────────────────────────── */}
+      {/* ── Received text ───────────────────────────────────────────────────── */}
+      {receivedText && (
+        <div style={S.section}>
+          <div style={S.label}>Recovered Text</div>
+          <textarea
+            style={S.textarea}
+            value={receivedText}
+            readOnly
+          />
+        </div>
+      )}
+
+      {/* ── Download recovered file ───────────────────────────────────────────── */}
       {receivedFile && (
         <div style={S.section}>
           <div style={S.label}>Recovered File</div>
@@ -598,7 +621,7 @@ export function ReceiverPage() {
   );
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;

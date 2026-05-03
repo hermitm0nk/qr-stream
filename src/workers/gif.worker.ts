@@ -8,16 +8,13 @@
 import { generateQRMatrix } from '@/core/qr/qr_encode';
 import { rasterizeQR } from '@/core/qr/frame_raster';
 import { createQRGif } from '@/core/gif/gif_render';
-import type { ProfileConfig } from '@/core/protocol/constants';
-import type { ManifestData } from '@/core/protocol/manifest';
+import { QR_VERSION, ECC_LEVEL, FRAME_DELAY } from '@/core/protocol/constants';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface GenerateInput {
   type: 'generate';
   packets: Uint8Array[];
-  manifest: ManifestData;
-  profile: ProfileConfig;
 }
 
 interface GifOutput {
@@ -33,7 +30,7 @@ interface ErrorOutput {
   message: string;
 }
 
-// ─── Worker handler ──────────────────────────────────────────────────────────
+// ─── Worker handler ─────────────────────────────────────────────────────────────────u2500
 
 self.onmessage = (e: MessageEvent<GenerateInput>) => {
   const msg = e.data;
@@ -41,7 +38,6 @@ self.onmessage = (e: MessageEvent<GenerateInput>) => {
 
   try {
     const result = handleGenerate(msg);
-    // Transfer the GIF buffer to avoid extra copy
     self.postMessage(result, [result.gifData]);
   } catch (err: any) {
     self.postMessage({ type: 'error', message: err.message ?? String(err) } satisfies ErrorOutput);
@@ -49,11 +45,9 @@ self.onmessage = (e: MessageEvent<GenerateInput>) => {
 };
 
 function handleGenerate(input: GenerateInput): GifOutput {
-  const { packets, manifest, profile } = input;
-  const { qrVersion, eccLevel, frameDelay } = profile;
+  const { packets } = input;
 
-  // QR module count for this version
-  const moduleCount = qrVersion * 4 + 17;
+  const moduleCount = QR_VERSION * 4 + 17;
 
   // Determine optimal scale: aim for ~300-400 px width
   const targetPx = 360;
@@ -61,35 +55,29 @@ function handleGenerate(input: GenerateInput): GifOutput {
   const totalModules = moduleCount + quietModules;
   const scale = Math.max(2, Math.round(targetPx / totalModules));
 
-  // ── Generate QR matrix for each packet ──────────────────────────────────
+  // ─── Generate QR matrix for each packet ────────────────────────────────────
   const frames: Uint8Array[] = [];
   let width = 0;
   let height = 0;
 
   for (let i = 0; i < packets.length; i++) {
     const packet = packets[i]!;
-
-    // Generate QR code matrix from raw packet bytes
-    const matrix = generateQRMatrix(packet, qrVersion, eccLevel);
-
-    // Rasterize to RGBA pixel data
+    const matrix = generateQRMatrix(packet, QR_VERSION, ECC_LEVEL);
     const imageData = rasterizeQR(matrix, scale);
     if (i === 0) {
       width = imageData.width;
       height = imageData.height;
     }
-
     frames.push(new Uint8Array(imageData.data.buffer));
   }
 
-  // ── Create animated GIF ─────────────────────────────────────────────────
-  // frameDelay from profile is in centiseconds; gifenc expects milliseconds
-  const delayMs = frameDelay * 10; // cs → ms
+  // ─── Create animated GIF ────────────────────────────────────────────────
+  const delayMs = FRAME_DELAY * 10; // cs → ms
   const gifBytes = createQRGif(frames, delayMs, width, height);
 
   return {
     type: 'gifReady',
-    gifData: gifBytes.buffer.slice(gifBytes.byteOffset, gifBytes.byteOffset + gifBytes.byteLength),
+    gifData: gifBytes.buffer.slice(gifBytes.byteOffset, gifBytes.byteOffset + gifBytes.byteLength) as ArrayBuffer,
     width,
     height,
     frameCount: frames.length,

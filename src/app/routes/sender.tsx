@@ -1,23 +1,11 @@
 /**
- * Sender page — text/file input, profile selection, GIF generation preview.
+ * Sender page — text/file input, GIF generation preview.
  */
 import { useState, useCallback } from 'preact/hooks';
-import { ProfileId, PROFILES } from '@/core/protocol/constants';
-import type { ManifestData } from '@/core/protocol/manifest';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type InputMode = 'text' | 'file';
-type CompMode = 'auto' | 'off';
-
-interface EncodeStats {
-  originalSize: number;
-  preprocessedSize: number;
-  frameCount: number;
-  estimatedGifBytes: number;
-  totalGenerations: number;
-  packetsPerGen: number;
-}
 
 interface GifResult {
   gifData: ArrayBuffer;
@@ -26,7 +14,7 @@ interface GifResult {
   frameCount: number;
 }
 
-// ─── Inline styles ───────────────────────────────────────────────────────────
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 type CSSProps = Record<string, string | number>;
 
@@ -53,26 +41,8 @@ const S = {
     alignItems: 'center',
     flexWrap: 'wrap' as const,
   },
-  select: {
-    background: '#0d1117',
-    color: '#c9d1d9',
-    border: '1px solid #30363d',
-    borderRadius: 6,
-    padding: '8px 12px',
-    fontSize: 14,
-  },
   btn: {
     background: '#238636',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 6,
-    padding: '10px 24px',
-    fontSize: 15,
-    fontWeight: 600,
-    cursor: 'pointer',
-  } as CSSProps,
-  btnDanger: {
-    background: '#da3633',
     color: '#fff',
     border: 'none',
     borderRadius: 6,
@@ -159,24 +129,16 @@ const S = {
   } as CSSProps,
 };
 
-const PROFILE_OPTIONS: { id: ProfileId; label: string }[] = [
-  { id: ProfileId.ROBUST, label: 'Robust' },
-  { id: ProfileId.BALANCED, label: 'Balanced' },
-  { id: ProfileId.FAST, label: 'Fast' },
-];
-
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── Component ───────────────────────────────────────────────────────────────────
 
 export function SenderPage() {
   const [mode, setMode] = useState<InputMode>('text');
   const [text, setText] = useState('');
   const [file, setFile] = useState<File | null>(null);
-  const [profileId, setProfileId] = useState<ProfileId>(ProfileId.ROBUST);
-  const [compression, setCompression] = useState<CompMode>('auto');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [gifResult, setGifResult] = useState<GifResult | null>(null);
-  const [stats, setStats] = useState<EncodeStats | null>(null);
+  const [stats, setStats] = useState<{ originalSize: number; preprocessedSize: number; frameCount: number; totalGenerations: number } | null>(null);
   const [gifUrl, setGifUrl] = useState<string | null>(null);
   const [error, setError] = useState('');
 
@@ -191,33 +153,28 @@ export function SenderPage() {
     setStats(null);
     if (gifUrl) { URL.revokeObjectURL(gifUrl); setGifUrl(null); }
 
-    // --- read input data ---
     let data: ArrayBuffer;
-    let filename: string;
-    let mime: string;
+    let isText: boolean;
 
     if (mode === 'text') {
       const trimmed = text.trim();
       if (!trimmed) { setError('Please enter some text.'); return; }
       data = new TextEncoder().encode(trimmed).buffer;
-      filename = '';
-      mime = 'text/plain';
+      isText = true;
     } else {
       if (!file) { setError('Please select a file.'); return; }
       if (file.size > 8 * 1024 * 1024) { setError('File too large. Maximum size is 8 MB.'); return; }
       data = await file.arrayBuffer();
-      filename = file.name;
-      mime = file.type || 'application/octet-stream';
+      isText = false;
     }
 
-    const profile = PROFILES[profileId];
-    const compress = compression === 'auto' ? data.byteLength > 512 : false;
+    const compress = data.byteLength > 64;
 
     setBusy(true);
     setStatus('Encoding data…');
 
     try {
-      // ── Step 1: Encode worker ──────────────────────────────────────────
+      // ── Step 1: Encode worker ─────────────────────────────────────
       const encodeWorker = new Worker(
         new URL('@/workers/encode.worker.ts', import.meta.url),
         { type: 'module' },
@@ -225,8 +182,9 @@ export function SenderPage() {
 
       const encoded = await new Promise<{
         packets: Uint8Array[];
-        manifest: ManifestData;
-        stats: EncodeStats;
+        sessionId: number;
+        totalGenerations: number;
+        stats: { originalSize: number; preprocessedSize: number; frameCount: number };
       }>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('Encode worker timed out')), 120_000);
         encodeWorker.onmessage = (e: MessageEvent) => {
@@ -239,16 +197,21 @@ export function SenderPage() {
         };
         encodeWorker.onerror = (err) => { clearTimeout(timeout); reject(err); };
         encodeWorker.postMessage(
-          { type: 'encode', data, profileId, filename, mime, compress },
+          { type: 'encode', data, isText, compress },
           [data],
         );
       });
       encodeWorker.terminate();
 
-      setStats(encoded.stats);
+      setStats({
+        originalSize: encoded.stats.originalSize,
+        preprocessedSize: encoded.stats.preprocessedSize,
+        frameCount: encoded.stats.frameCount,
+        totalGenerations: encoded.totalGenerations,
+      });
       setStatus(`Generating GIF (${encoded.stats.frameCount} frames)…`);
 
-      // ── Step 2: GIF worker ─────────────────────────────────────────────
+      // ── Step 2: GIF worker ─────────────────────────────────────────
       const gifWorker = new Worker(
         new URL('@/workers/gif.worker.ts', import.meta.url),
         { type: 'module' },
@@ -270,20 +233,20 @@ export function SenderPage() {
           }
         };
         gifWorker.onerror = (err) => { clearTimeout(timeout); reject(err); };
-        // Transfer packets to avoid copy
         const transfer: ArrayBufferLike[] = [];
-        const transferPackets = encoded.packets.map(p => {
-          if (p.buffer.byteLength <= 1024 * 1024) { transfer.push(p.buffer as ArrayBuffer); }
+        const transferPackets = encoded.packets.map((p) => {
+          if (p.buffer.byteLength <= 1024 * 1024) transfer.push(p.buffer as ArrayBuffer);
           return p;
         });
+        const transferList = transfer.length > 0 ? (transfer as ArrayBuffer[]) : [];
         gifWorker.postMessage(
-          { type: 'generate', packets: transferPackets, manifest: encoded.manifest, profile },
-          transfer.length > 0 ? (transfer as ArrayBuffer[]) : undefined,
+          { type: 'generate', packets: transferPackets },
+          transferList,
         );
       });
       gifWorker.terminate();
 
-      // ── Step 3: show result ─────────────────────────────────────────────
+      // ── Step 3: show result ────────────────────────────────────────
       const url = URL.createObjectURL(new Blob([gif.gifData], { type: 'image/gif' }));
       setGifUrl(url);
       setGifResult(gif);
@@ -293,26 +256,22 @@ export function SenderPage() {
     } finally {
       setBusy(false);
     }
-  }, [mode, text, file, profileId, compression, gifUrl]);
+  }, [mode, text, file, gifUrl]);
 
-  // ─── Download handler ──────────────────────────────────────────────────────
   const handleDownload = useCallback(() => {
     if (!gifResult) return;
     const blob = new Blob([gifResult.gifData], { type: 'image/gif' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `qr-transfer-${profileId}-${stats?.totalGenerations ?? 0}g.gif`;
+    a.download = `qr-transfer-${stats?.totalGenerations ?? 0}g.gif`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [gifResult, profileId, stats]);
-
-  // ─── Compute warnings ──────────────────────────────────────────────────────
-  const showWarning = false;
+  }, [gifResult, stats]);
 
   return (
     <div>
-      {/* ── Input mode toggle ───────────────────────────────────────────── */}
+      {/* ── Input mode toggle ───────────────────────────────────────────────── */}
       <div style={S.section}>
         <div style={S.row}>
           <span style={S.label}>Input mode</span>
@@ -336,33 +295,6 @@ export function SenderPage() {
         )}
       </div>
 
-      {/* ── Profile + compression ───────────────────────────────────────── */}
-      <div style={S.section}>
-        <div style={S.row}>
-          <div>
-            <span style={S.label}>Profile</span>
-            <select
-              style={S.select}
-              value={profileId}
-              onChange={(e) => setProfileId(Number((e.target as HTMLSelectElement).value) as ProfileId)}
-            >
-              {PROFILE_OPTIONS.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.label} (V{PROFILES[o.id].qrVersion}-{PROFILES[o.id].eccLevel}, K={PROFILES[o.id].k})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <span style={S.label}>Compression</span>
-            <div style={S.toggleGroup}>
-              <button style={S.toggleBtn(compression === 'auto')} onClick={() => setCompression('auto')}>Auto</button>
-              <button style={S.toggleBtn(compression === 'off')} onClick={() => setCompression('off')}>Off</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
       {/* ── Generate ────────────────────────────────────────────────────── */}
       <div style={S.section}>
         <button
@@ -382,7 +314,7 @@ export function SenderPage() {
         {error && <div style={S.warn}>⚠ {error}</div>}
       </div>
 
-      {/* ── Preview ─────────────────────────────────────────────────────── */}
+      {/* ── Preview ──────────────────────────────────────────────────────────── */}
       {gifUrl && gifResult && (
         <div style={S.section}>
           <div style={S.label}>Preview</div>
@@ -395,7 +327,7 @@ export function SenderPage() {
         </div>
       )}
 
-      {/* ── Stats ───────────────────────────────────────────────────────── */}
+      {/* ── Stats ────────────────────────────────────────────────────────────── */}
       {stats && (
         <div style={S.section}>
           <div style={S.label}>Transfer Info</div>
@@ -417,20 +349,10 @@ export function SenderPage() {
   );
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function estimateThroughput(originalSize: number, frameCount: number, profileId: ProfileId): string {
-  const profile = PROFILES[profileId];
-  const totalTimeSec = (frameCount * profile.frameDelay * 10) / 1000; // frameDelay is in centiseconds
-  if (totalTimeSec <= 0) return '—';
-  const bps = (originalSize * 8) / totalTimeSec;
-  if (bps < 1000) return `${bps.toFixed(0)} bps`;
-  if (bps < 1_000_000) return `${(bps / 1000).toFixed(1)} Kbps`;
-  return `${(bps / 1_000_000).toFixed(2)} Mbps`;
 }
