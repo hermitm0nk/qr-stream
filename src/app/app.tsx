@@ -1,11 +1,17 @@
 /**
- * App shell — top-level layout with tab navigation.
+ * App shell — top-level layout with hash-based tab navigation.
  */
-import { useState } from 'preact/hooks';
+import { useState, useEffect } from 'preact/hooks';
 import { SenderPage } from '@/app/routes/sender';
 import { ReceiverPage } from '@/app/routes/receiver';
 
 type Tab = 'sender' | 'receiver';
+
+function getTabFromHash(): Tab {
+  const hash = window.location.hash.replace('#', '');
+  if (hash === 'receiver') return 'receiver';
+  return 'sender';
+}
 
 const styles: Record<string, Record<string, string | number>> = {
   container: {
@@ -62,7 +68,18 @@ const styles: Record<string, Record<string, string | number>> = {
 };
 
 export function App() {
-  const [tab, setTab] = useState<Tab>('sender');
+  const [tab, setTab] = useState<Tab>(getTabFromHash);
+
+  useEffect(() => {
+    const onHashChange = () => setTab(getTabFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const navigate = (t: Tab) => {
+    window.location.hash = t;
+    setTab(t);
+  };
 
   return (
     <div style={styles.container}>
@@ -71,13 +88,13 @@ export function App() {
         <nav style={styles.tabBar}>
           <button
             style={{ ...styles.tab, ...(tab === 'sender' ? styles.tabActive : {}) }}
-            onClick={() => setTab('sender')}
+            onClick={() => navigate('sender')}
           >
             📤 Sender
           </button>
           <button
             style={{ ...styles.tab, ...(tab === 'receiver' ? styles.tabActive : {}) }}
-            onClick={() => setTab('receiver')}
+            onClick={() => navigate('receiver')}
           >
             📥 Receiver
           </button>

@@ -1,7 +1,7 @@
 /**
  * Sender page — text/file input, GIF generation preview.
  */
-import { useState, useCallback } from 'preact/hooks';
+import { useState, useCallback, useRef } from 'preact/hooks';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -142,16 +142,42 @@ export function SenderPage() {
   const [gifUrl, setGifUrl] = useState<string | null>(null);
   const [error, setError] = useState('');
 
-  const handleFile = useCallback((e: Event) => {
-    const input = e.target as HTMLInputElement;
-    setFile(input.files?.[0] ?? null);
-  }, []);
+  const gifUrlRef = useRef<string | null>(null);
 
-  const handleGenerate = useCallback(async () => {
-    setError('');
+  /** Wipe all output state and revoke any existing blob URL. */
+  const resetOutput = useCallback(() => {
     setGifResult(null);
     setStats(null);
-    if (gifUrl) { URL.revokeObjectURL(gifUrl); setGifUrl(null); }
+    setError('');
+    setStatus('');
+    if (gifUrlRef.current) {
+      URL.revokeObjectURL(gifUrlRef.current);
+      gifUrlRef.current = null;
+    }
+    setGifUrl(null);
+  }, []);
+
+  const handleModeChange = useCallback((newMode: InputMode) => {
+    setMode(newMode);
+    resetOutput();
+  }, [resetOutput]);
+
+  const handleTextChange = useCallback((value: string) => {
+    setText(value);
+    if (gifUrlRef.current || gifResult || stats) {
+      resetOutput();
+    }
+  }, [resetOutput, gifResult, stats]);
+
+  const handleFile = useCallback((e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const newFile = input.files?.[0] ?? null;
+    setFile(newFile);
+    resetOutput();
+  }, [resetOutput]);
+
+  const handleGenerate = useCallback(async () => {
+    resetOutput();
 
     let data: ArrayBuffer;
     let isText: boolean;
@@ -255,6 +281,7 @@ export function SenderPage() {
 
       // ── Step 3: show result ────────────────────────────────────────
       const url = URL.createObjectURL(new Blob([gif.gifData], { type: 'image/gif' }));
+      gifUrlRef.current = url;
       setGifUrl(url);
       setGifResult(gif);
       setStatus('Done ✓');
@@ -263,7 +290,7 @@ export function SenderPage() {
     } finally {
       setBusy(false);
     }
-  }, [mode, text, file, gifUrl]);
+  }, [mode, text, file, resetOutput]);
 
   const handleDownload = useCallback(() => {
     if (!gifResult) return;
@@ -283,8 +310,8 @@ export function SenderPage() {
         <div style={S.row}>
           <span style={S.label}>Input mode</span>
           <div style={S.toggleGroup}>
-            <button style={S.toggleBtn(mode === 'text')} onClick={() => setMode('text')}>Text</button>
-            <button style={S.toggleBtn(mode === 'file')} onClick={() => setMode('file')}>File</button>
+            <button style={S.toggleBtn(mode === 'text')} onClick={() => handleModeChange('text')}>Text</button>
+            <button style={S.toggleBtn(mode === 'file')} onClick={() => handleModeChange('file')}>File</button>
           </div>
         </div>
 
@@ -293,7 +320,7 @@ export function SenderPage() {
             style={{ ...S.textarea, marginTop: 10 }}
             placeholder="Type or paste text to transfer…"
             value={text}
-            onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
+            onInput={(e) => handleTextChange((e.target as HTMLTextAreaElement).value)}
           />
         ) : (
           <div style={{ marginTop: 10 }}>
