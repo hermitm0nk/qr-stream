@@ -2,11 +2,12 @@
  * Sender-side packetizer — single profile, no manifest.
  *
  * Steps:
- *   1. Optional compression (deflate-raw)
- *   2. Split preprocessed data into 191-byte symbols
- *   3. Group into generations of K=16
- *   4. RLNC encode each generation (16 systematic + 8 coded)
- *   5. Build transport packets with metadata in every header
+ *   1. Optional metadata wrapping (filename + mime for files)
+ *   2. Optional compression (deflate-raw)
+ *   3. Split preprocessed data into 191-byte symbols
+ *   4. Group into generations of K=16
+ *   5. RLNC encode each generation (16 systematic + 8 coded)
+ *   6. Build transport packets with metadata in every header
  *
  * @module
  */
@@ -35,7 +36,7 @@ export interface PacketizerResult {
   isCompressed: boolean;
 }
 
-// ─── Packetizer ──────────────────────────────────────────────────────────────────
+// ─── Packetizer ───────────────────────────────────────────────────────────────────
 
 /**
  * Encode raw data into transport packets.
@@ -43,28 +44,52 @@ export interface PacketizerResult {
  * @param data       Raw bytes to transmit
  * @param isText     Whether the payload is plain text
  * @param compress   Whether to apply deflate-raw compression
+ * @param filename   Optional original filename (for file downloads)
+ * @param mimeType   Optional MIME type (for file downloads)
  * @returns PacketizerResult containing all packets and metadata
  */
 export function packetize(
   data: Uint8Array,
   isText: boolean,
   compress: boolean,
+  filename?: string,
+  mimeType?: string,
 ): PacketizerResult {
-  // 1. Optional compression
+  // 1. Optional metadata wrapping for files
+  let wrapped: Uint8Array;
+  if (!isText && filename) {
+    const nameBytes = new TextEncoder().encode(filename);
+    const mimeBytes = new TextEncoder().encode(mimeType || 'application/octet-stream');
+    const nameLen = Math.min(nameBytes.length, 255);
+    const mimeLen = Math.min(mimeBytes.length, 255);
+    wrapped = new Uint8Array(2 + nameLen + mimeLen + data.length);
+    let off = 0;
+    wrapped[off++] = nameLen;
+    wrapped.set(nameBytes.slice(0, nameLen), off);
+    off += nameLen;
+    wrapped[off++] = mimeLen;
+    wrapped.set(mimeBytes.slice(0, mimeLen), off);
+    off += mimeLen;
+    wrapped.set(data, off);
+  } else {
+    wrapped = new Uint8Array(data);
+  }
+
+  // 2. Optional compression
   let preprocessed: Uint8Array;
   let isCompressed: boolean;
 
-  if (compress && data.length > 64) {
-    preprocessed = deflateSync(data);
+  if (compress && wrapped.length > 64) {
+    preprocessed = deflateSync(wrapped);
     isCompressed = true;
   } else {
-    preprocessed = new Uint8Array(data);
+    preprocessed = new Uint8Array(wrapped);
     isCompressed = false;
   }
 
   const dataLength = preprocessed.length;
 
-  // 2. Split into fixed-size symbols
+  // 3. Split into fixed-size symbols
   const symbols: Uint8Array[] = [];
   for (let offset = 0; offset < dataLength; offset += MAX_PAYLOAD_SIZE) {
     const chunk = preprocessed.slice(offset, offset + MAX_PAYLOAD_SIZE);
@@ -82,7 +107,7 @@ export function packetize(
   const sessionId = createSessionId();
   const codingSeed = 0;
 
-  // 3. Encode generations and build packets
+  // 4. Encode generations and build packets
   const packets: Uint8Array[] = [];
 
   for (let gen = 0; gen < totalGenerations; gen++) {

@@ -7,15 +7,6 @@ import { parseGif, renderGifFrame } from '@/core/gif/gif_parser';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-interface SessionInfo {
-  sessionId: string;
-  progress: number;
-  solvedGenerations: number;
-  totalGenerations: number;
-  framesDecoded: number;
-  status: 'receiving' | 'complete' | 'error';
-}
-
 interface ReceivedFile {
   data: ArrayBuffer;
   filename: string;
@@ -77,48 +68,21 @@ const S = {
     display: 'block',
     marginTop: 8,
   } as CSSProps,
-  progressOuter: {
-    width: '100%',
-    height: 8,
-    background: '#30363d',
-    borderRadius: 4,
-    overflow: 'hidden',
-    marginTop: 8,
-  } as CSSProps,
-  progressInner: (pct: number): CSSProps => ({
-    width: `${Math.min(100, Math.max(0, pct))}%`,
-    height: '100%',
-    background: pct >= 100 ? '#3fb950' : '#58a6ff',
-    borderRadius: 4,
-    transition: 'width 0.3s ease',
-  }),
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse' as const,
-    fontSize: 13,
-    marginTop: 8,
-  } as CSSProps,
-  th: {
-    textAlign: 'left' as const,
-    padding: '8px 10px',
-    borderBottom: '1px solid #30363d',
-    color: '#8b949e',
-    fontWeight: 600,
-  },
-  td: {
-    padding: '8px 10px',
-    borderBottom: '1px solid #21262d',
-    color: '#c9d1d9',
-  },
-  statusBadge: (status: string): CSSProps => ({
-    display: 'inline-block',
-    padding: '2px 8px',
-    borderRadius: 10,
+  statsBar: {
+    display: 'flex',
+    gap: 16,
+    alignItems: 'center',
     fontSize: 12,
+    color: '#8b949e',
+    marginTop: 6,
+    flexWrap: 'wrap' as const,
+  } as CSSProps,
+  statValue: {
+    color: '#c9d1d9',
     fontWeight: 600,
-    background: status === 'complete' ? '#1b3a1b' : status === 'error' ? '#3d1a1a' : '#1f2937',
-    color: status === 'complete' ? '#3fb950' : status === 'error' ? '#f85149' : '#8b949e',
-  }),
+    fontFamily: 'monospace',
+    fontSize: 13,
+  } as CSSProps,
   warn: {
     background: '#3d2600',
     border: '1px solid #bb8009',
@@ -186,14 +150,12 @@ export function ReceiverPage() {
   const [inputMode, setInputMode] = useState<InputMode>('camera');
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState('');
-  const [progress, setProgress] = useState(0);
   const [totalFrames, setTotalFrames] = useState(0);
   const [framesWithQR, setFramesWithQR] = useState(0);
   const [acceptedPackets, setAcceptedPackets] = useState(0);
   const [neededPackets, setNeededPackets] = useState(0);
   const [solvedGens, setSolvedGens] = useState(0);
   const [totalGens, setTotalGens] = useState(0);
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
   const [receivedText, setReceivedText] = useState('');
   const [error, setError] = useState('');
@@ -217,40 +179,7 @@ export function ReceiverPage() {
           setNeededPackets(msg.neededPackets ?? 0);
           setSolvedGens(msg.solvedGenerations);
           setTotalGens(msg.totalGenerations);
-          setProgress(msg.totalGenerations > 0 ? msg.solvedGenerations / msg.totalGenerations : 0);
           setStatus(msg.status);
-
-          if (msg.sessionId !== undefined) {
-            const sid = String(msg.sessionId);
-            setSessions((prev) => {
-              const existing = prev.find((s) => s.sessionId === sid);
-              if (existing) {
-                return prev.map((s) =>
-                  s.sessionId === sid
-                    ? {
-                        ...s,
-                        progress: msg.totalGenerations > 0 ? msg.solvedGenerations / msg.totalGenerations : 0,
-                        solvedGenerations: msg.solvedGenerations,
-                        totalGenerations: msg.totalGenerations,
-                        framesDecoded: msg.totalFrames ?? 0,
-                        status: 'receiving' as const,
-                      }
-                    : s,
-                );
-              }
-              return [
-                ...prev,
-                {
-                  sessionId: sid,
-                  progress: 0,
-                  solvedGenerations: 0,
-                  totalGenerations: msg.totalGenerations,
-                  framesDecoded: 0,
-                  status: 'receiving' as const,
-                } as SessionInfo,
-              ];
-            });
-          }
           break;
         }
         case 'complete': {
@@ -266,21 +195,10 @@ export function ReceiverPage() {
             setReceivedText('');
           }
           setStatus('Complete ✓');
-          setProgress(1);
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.sessionId === String(msg.sessionId) ? { ...s, status: 'complete' as const, progress: 1 } : s,
-            ),
-          );
           break;
         }
         case 'error': {
           setError(msg.message);
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.sessionId === String(msg.sessionId) ? { ...s, status: 'error' as const } : s,
-            ),
-          );
           break;
         }
       }
@@ -319,8 +237,6 @@ export function ReceiverPage() {
     setError('');
     setReceivedFile(null);
     setReceivedText('');
-    setSessions([]);
-    setProgress(0);
     setTotalFrames(0);
     setFramesWithQR(0);
     setAcceptedPackets(0);
@@ -341,7 +257,6 @@ export function ReceiverPage() {
         const capabilities = track.getCapabilities() as any;
         if (capabilities?.zoom) {
           setHasZoomSupport(true);
-          // Apply an initial modest zoom if supported
           const idealZoom = Math.min(2, capabilities.zoom.max ?? 2);
           try {
             await track.applyConstraints({ advanced: [{ zoom: idealZoom }] } as any);
@@ -392,8 +307,6 @@ export function ReceiverPage() {
     setError('');
     setReceivedFile(null);
     setReceivedText('');
-    setSessions([]);
-    setProgress(0);
     setTotalFrames(0);
     setFramesWithQR(0);
     setAcceptedPackets(0);
@@ -583,6 +496,28 @@ export function ReceiverPage() {
             <div style={{ position: 'absolute', bottom: '25%', right: '25%', width: 16, height: 16, borderBottom: '3px solid #58a6ff', borderRight: '3px solid #58a6ff', pointerEvents: 'none' }} />
           </div>
           <canvas ref={canvasRef} style={{ display: 'none' }} />
+
+          {/* Inline stats above controls */}
+          {scanning && (
+            <div style={S.statsBar}>
+              <span>
+                scanned <span style={S.statValue}>{totalFrames}</span>
+              </span>
+              <span>
+                useful <span style={S.statValue}>{acceptedPackets}</span>
+              </span>
+              <span>
+                need <span style={S.statValue}>{neededPackets}</span>
+              </span>
+              <span>·</span>
+              <span>
+                gen <span style={S.statValue}>{solvedGens}</span> of <span style={S.statValue}>{totalGens}</span>
+              </span>
+              <span>·</span>
+              <span>{status || 'Working…'}</span>
+            </div>
+          )}
+
           <div style={{ ...S.row, marginTop: 10 }}>
             {!scanning ? (
               <button style={S.btn} onClick={startCameraScanning}>
@@ -626,103 +561,24 @@ export function ReceiverPage() {
             Upload a QR-over-GIF file generated by the Sender.
           </p>
           <input type="file" accept=".gif,image/gif" onChange={handleGifFile} />
+          {scanning && (
+            <div style={S.statsBar}>
+              <span>
+                scanned <span style={S.statValue}>{totalFrames}</span>
+              </span>
+              <span>
+                useful <span style={S.statValue}>{acceptedPackets}</span>
+              </span>
+              <span>
+                need <span style={S.statValue}>{neededPackets}</span>
+              </span>
+              <span>·</span>
+              <span>
+                gen <span style={S.statValue}>{solvedGens}</span> of <span style={S.statValue}>{totalGens}</span>
+              </span>
+            </div>
+          )}
           {error && <div style={{ ...S.warn, marginTop: 8 }}>⚠ {error}</div>}
-        </div>
-      )}
-
-      {/* ── Status + progress ────────────────────────────────────────────────── */}
-      <div style={S.section}>
-        <div style={S.label}>Status</div>
-        <div style={{ ...S.row, gap: 16 }}>
-          <span>
-            <strong>Status:</strong> {status || 'Idle'}
-          </span>
-          <span>
-            <strong>Generations:</strong> {solvedGens}/{totalGens}
-          </span>
-        </div>
-        {totalGens > 0 && (
-          <div style={S.progressOuter}>
-            <div style={S.progressInner(progress * 100)} />
-          </div>
-        )}
-        {scanning && (
-          <div style={{ marginTop: 8, fontSize: 13, color: '#8b949e' }}>
-            <span style={S.sp} />{' '}
-            {status || 'Working…'}
-          </div>
-        )}
-      </div>
-
-      {/* ── Frame statistics ───────────────────────────────────────────────── */}
-      {scanning && (
-        <div style={S.section}>
-          <div style={S.label}>Frame Statistics</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-            <div style={{ textAlign: 'center', padding: '10px 0', background: '#0d1117', borderRadius: 6 }}>
-              <div style={{ fontSize: 20, fontWeight: 700, color: '#58a6ff' }}>{totalFrames}</div>
-              <div style={{ fontSize: 11, color: '#8b949e', marginTop: 2 }}>Scanned</div>
-            </div>
-            <div style={{ textAlign: 'center', padding: '10px 0', background: '#0d1117', borderRadius: 6 }}>
-              <div style={{ fontSize: 20, fontWeight: 700, color: '#3fb950' }}>{acceptedPackets}</div>
-              <div style={{ fontSize: 11, color: '#8b949e', marginTop: 2 }}>Useful (linearly independent)</div>
-            </div>
-            <div style={{ textAlign: 'center', padding: '10px 0', background: '#0d1117', borderRadius: 6 }}>
-              <div style={{ fontSize: 20, fontWeight: 700, color: '#d29922' }}>{neededPackets}</div>
-              <div style={{ fontSize: 11, color: '#8b949e', marginTop: 2 }}>Minimal needed</div>
-            </div>
-          </div>
-          <p style={{ fontSize: 11, color: '#8b949e', marginTop: 8 }}>
-            <strong>Scanned</strong> = total frames with valid QR codes seen.&nbsp;
-            <strong>Useful</strong> = linearly independent symbols accepted by the decoder.&nbsp;
-            <strong>Minimal needed</strong> = K × totalGenerations ({16} symbols per generation).
-          </p>
-        </div>
-      )}
-
-      {/* ── Sessions table ─────────────────────────────────────────────────────── */}
-      {sessions.length > 0 && (
-        <div style={S.section}>
-          <div style={S.label}>Sessions</div>
-          <table style={S.table}>
-            <thead>
-              <tr>
-                <th style={S.th}>Session ID</th>
-                <th style={S.th}>Progress</th>
-                <th style={S.th}>Generations</th>
-                <th style={S.th}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessions.map((s) => (
-                <tr key={s.sessionId}>
-                  <td style={S.td}>{s.sessionId}</td>
-                  <td style={S.td}>
-                    <div
-                      style={{
-                        ...S.progressOuter,
-                        marginTop: 0,
-                        width: 100,
-                        display: 'inline-block',
-                        verticalAlign: 'middle',
-                      }}
-                    >
-                      <div style={S.progressInner(s.progress * 100)} />
-                    </div>
-                    <span style={{ marginLeft: 8, fontSize: 12 }}>
-                      {Math.round(s.progress * 100)}%
-                    </span>
-                  </td>
-                  <td style={S.td}>
-                    {s.solvedGenerations}/{s.totalGenerations}
-                  </td>
-                  <td style={S.td}>
-                    <span style={S.statusBadge(s.status)}>{s.status}</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       )}
 

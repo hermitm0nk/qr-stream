@@ -14,6 +14,8 @@ interface EncodeInput {
   data: ArrayBuffer;
   isText: boolean;
   compress: boolean;
+  filename?: string;
+  mimeType?: string;
 }
 
 interface EncodeOutput {
@@ -33,7 +35,7 @@ interface ErrorOutput {
   message: string;
 }
 
-// ─── Worker handler ─────────────────────────────────────────────────────────────────u2500
+// ─── Worker handler ───────────────────────────────────────────────────────────────────
 
 self.onmessage = (e: MessageEvent<EncodeInput>) => {
   const msg = e.data;
@@ -52,7 +54,7 @@ self.onmessage = (e: MessageEvent<EncodeInput>) => {
 
 function handleEncode(input: EncodeInput): EncodeOutput {
   const originalBytes = new Uint8Array(input.data);
-  const result = packetize(originalBytes, input.isText, input.compress);
+  const result = packetize(originalBytes, input.isText, input.compress, input.filename, input.mimeType);
   const frames = scheduleFrames(result.packets, result.totalGenerations, result.sessionId);
 
   return {

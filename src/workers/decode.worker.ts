@@ -12,9 +12,9 @@ import type { Packet } from '@/core/protocol/packet';
 import { PacketType, K, MAX_PAYLOAD_SIZE } from '@/core/protocol/constants';
 import { GenerationDecoder } from '@/core/fec/rlnc_decoder';
 
-// ─── Session state ───────────────────────────────────────────────────────────
+// ─── State ───────────────────────────────────────────────────────────────────
 
-interface SessionState {
+interface DecodeState {
   sessionId: number;
   decoder: GenerationDecoder;
   dedup: Set<string>;
@@ -26,14 +26,13 @@ interface SessionState {
   isCompressed: boolean;
   completed: boolean;
   stats: {
-    totalFrames: number;      // every frame received by worker
-    framesWithQR: number;     // frames where QR was found
-    acceptedPackets: number;  // linearly independent symbols accepted
+    totalFrames: number;
+    framesWithQR: number;
+    acceptedPackets: number;
   };
 }
 
-// Worker-global state (keyed by sessionId)
-const sessions = new Map<number, SessionState>();
+let current: DecodeState | null = null;
 
 // ─── Worker handler ──────────────────────────────────────────────────────────
 
@@ -41,7 +40,7 @@ self.onmessage = (e: MessageEvent) => {
   const msg = e.data;
 
   if (msg.type === 'reset') {
-    sessions.clear();
+    current = null;
     return;
   }
 
@@ -72,25 +71,12 @@ self.onmessage = (e: MessageEvent) => {
 // ─── Frame handling ──────────────────────────────────────────────────────────
 
 function handleFrame(imageData: ImageData): void {
-  let state: SessionState | undefined;
-
   const decoded = decodeQRFromCanvas(imageData, { inversionAttempts: 'attemptBoth' });
-
-  // If we already have a session, count this frame
-  // (we don't know sessionId until we parse, so we defer counting)
-  // Instead: count total frames per-session after first packet seen
-
-  if (!decoded) {
-    // We can't count this frame against any session since we don't know the sessionId.
-    // For camera mode this is fine — frames without QR are not attributed.
-    return;
-  }
-
-  const bytes = decoded;
+  if (!decoded) return;
 
   let packet: Packet;
   try {
-    packet = parsePacket(bytes);
+    packet = parsePacket(decoded);
   } catch {
     return;
   }
@@ -98,10 +84,9 @@ function handleFrame(imageData: ImageData): void {
   const h = packet.header;
   const sessionId = h.sessionId;
 
-  // Get or create session state
-  state = sessions.get(sessionId);
-  if (!state) {
-    state = {
+  // Start fresh if this is a new session
+  if (!current || current.sessionId !== sessionId) {
+    current = {
       sessionId,
       decoder: new GenerationDecoder(K, MAX_PAYLOAD_SIZE, sessionId, 0),
       dedup: new Set(),
@@ -114,55 +99,57 @@ function handleFrame(imageData: ImageData): void {
       completed: false,
       stats: { totalFrames: 0, framesWithQR: 0, acceptedPackets: 0 },
     };
-    sessions.set(sessionId, state);
   }
 
-  if (state.completed) return;
+  if (current.completed) return;
 
   // Update metadata from header
-  state.totalGenerations = h.totalGenerations;
-  state.dataLength = h.dataLength;
-  state.isText = (h.flags & 1) !== 0;
-  state.isCompressed = (h.flags & 2) !== 0;
+  current.totalGenerations = h.totalGenerations;
+  current.dataLength = h.dataLength;
+  current.isText = (h.flags & 1) !== 0;
+  current.isCompressed = (h.flags & 2) !== 0;
 
-  state.stats.totalFrames++;
+  current.stats.totalFrames++;
 
-  // Dedup: sessionId:generationIndex:packetType:symbolIndex
-  const dedupKey = `${sessionId}:${h.generationIndex}:${h.packetType}:${h.symbolIndex}`;
-  if (state.dedup.has(dedupKey)) return;
-  state.dedup.add(dedupKey);
-  state.stats.framesWithQR++;
+  // Dedup: generationIndex:packetType:symbolIndex
+  const dedupKey = `${h.generationIndex}:${h.packetType}:${h.symbolIndex}`;
+  if (current.dedup.has(dedupKey)) return;
+  current.dedup.add(dedupKey);
+  current.stats.framesWithQR++;
 
   // Feed to decoder
   const gen = h.generationIndex;
   let accepted = false;
 
   if (h.packetType === PacketType.DATA_SYSTEMATIC) {
-    accepted = state.decoder.addSystematicSymbol(gen, packet.payload, h.symbolIndex);
+    accepted = current.decoder.addSystematicSymbol(gen, packet.payload, h.symbolIndex);
   } else {
-    accepted = state.decoder.addCodedSymbol(gen, packet.payload, h.symbolIndex);
+    accepted = current.decoder.addCodedSymbol(gen, packet.payload, h.symbolIndex);
   }
 
   if (accepted) {
-    state.stats.acceptedPackets++;
-    state.receivedPackets++;
+    current.stats.acceptedPackets++;
+    current.receivedPackets++;
 
-    if (state.decoder.isSolved(gen)) {
-      state.solvedGenerations.add(gen);
+    if (current.decoder.isSolved(gen)) {
+      current.solvedGenerations.add(gen);
 
-      if (state.solvedGenerations.size >= state.totalGenerations) {
-        reconstructData(state);
-        if (state.completed) return;
+      if (current.solvedGenerations.size >= current.totalGenerations) {
+        reconstructData(current);
+        if (current.completed) {
+          reportProgress(current);
+          return;
+        }
       }
     }
   }
 
-  reportProgress(state);
+  reportProgress(current);
 }
 
 // ─── Reconstruct original data from all source symbols ──────────────────────
 
-function reconstructData(state: SessionState): void {
+function reconstructData(state: DecodeState): void {
   const decoder = state.decoder;
 
   // Collect preprocessed data from each generation's source symbols
@@ -173,7 +160,6 @@ function reconstructData(state: SessionState): void {
     if (!symbols) {
       self.postMessage({
         type: 'error',
-        sessionId: state.sessionId,
         message: `Generation ${gen} not solved — reconstruction aborted`,
       });
       return;
@@ -201,7 +187,6 @@ function reconstructData(state: SessionState): void {
     } catch (err) {
       self.postMessage({
         type: 'error',
-        sessionId: state.sessionId,
         message: 'Decompression failed — data may be corrupted',
       });
       return;
@@ -210,11 +195,33 @@ function reconstructData(state: SessionState): void {
     finalData = trimmed;
   }
 
+  // Parse optional filename/mime metadata for file mode
+  let filename = '';
+  let mime = 'application/octet-stream';
+
+  if (!state.isText) {
+    try {
+      if (finalData.length >= 2) {
+        const filenameLen = finalData[0]!;
+        if (finalData.length >= 2 + filenameLen) {
+          const mimeLen = finalData[1 + filenameLen]!;
+          const metaEnd = 2 + filenameLen + mimeLen;
+          if (finalData.length >= metaEnd) {
+            filename = new TextDecoder().decode(finalData.slice(1, 1 + filenameLen));
+            mime = new TextDecoder().decode(finalData.slice(2 + filenameLen, metaEnd));
+            finalData = finalData.slice(metaEnd);
+          }
+        }
+      }
+    } catch {
+      // If metadata parsing fails, treat everything as raw data
+    }
+  }
+
   if (state.isText) {
     const text = new TextDecoder().decode(finalData);
     self.postMessage({
       type: 'complete',
-      sessionId: state.sessionId,
       isText: true,
       text,
     });
@@ -222,11 +229,10 @@ function reconstructData(state: SessionState): void {
     self.postMessage(
       {
         type: 'complete',
-        sessionId: state.sessionId,
         isText: false,
         data: finalData.buffer,
-        filename: `recovered-${state.sessionId.toString(16).padStart(8, '0')}`,
-        mime: 'application/octet-stream',
+        filename: filename || `recovered-${state.sessionId.toString(16).padStart(8, '0')}`,
+        mime: mime || 'application/octet-stream',
       },
       { transfer: [finalData.buffer as ArrayBuffer] },
     );
@@ -237,14 +243,13 @@ function reconstructData(state: SessionState): void {
 
 // ─── Progress reporting ──────────────────────────────────────────────────────
 
-function reportProgress(state: SessionState): void {
+function reportProgress(state: DecodeState): void {
   const totalGens = state.totalGenerations;
   const solvedGens = state.solvedGenerations.size;
   const needed = totalGens > 0 ? K * totalGens : 0;
 
   self.postMessage({
     type: 'progress',
-    sessionId: state.sessionId,
     totalFrames: state.stats.totalFrames,
     framesWithQR: state.stats.framesWithQR,
     acceptedPackets: state.stats.acceptedPackets,

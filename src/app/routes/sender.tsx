@@ -197,7 +197,14 @@ export function SenderPage() {
         };
         encodeWorker.onerror = (err) => { clearTimeout(timeout); reject(err); };
         encodeWorker.postMessage(
-          { type: 'encode', data, isText, compress },
+          {
+            type: 'encode',
+            data,
+            isText,
+            compress,
+            filename: mode === 'file' ? file?.name : undefined,
+            mimeType: mode === 'file' ? file?.type : undefined,
+          },
           [data],
         );
       });
