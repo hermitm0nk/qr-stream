@@ -15,7 +15,7 @@ describe('Frame Decode', () => {
     const text = 'Frame decode roundtrip test!';
     const data = new TextEncoder().encode(text);
     const result = packetize(data, false, false);
-    const frames = scheduleFrames(result.packets, result.totalGenerations, result.sessionId);
+    const frames = scheduleFrames(result.packets, result.totalGenerations);
 
     expect(frames.length).toBeGreaterThan(0);
 
@@ -34,14 +34,13 @@ describe('Frame Decode', () => {
       const decoded = parsePacket(decodedBytes!);
       const original = parsePacket(originalPacket);
 
-      expect(decoded.header.protocolVersion).toBe(original.header.protocolVersion);
-      expect(decoded.header.sessionId).toBe(original.header.sessionId);
       expect(decoded.header.generationIndex).toBe(original.header.generationIndex);
       expect(decoded.header.symbolIndex).toBe(original.header.symbolIndex);
-      expect(decoded.header.packetType).toBe(original.header.packetType);
+      expect(decoded.header.isText).toBe(original.header.isText);
+      expect(decoded.header.isLastGeneration).toBe(original.header.isLastGeneration);
+      expect(decoded.header.compressed).toBe(original.header.compressed);
       expect(decoded.header.totalGenerations).toBe(original.header.totalGenerations);
       expect(decoded.header.dataLength).toBe(original.header.dataLength);
-      expect(decoded.header.flags).toBe(original.header.flags);
       expect(decoded.payload).toEqual(original.payload);
     }
   });

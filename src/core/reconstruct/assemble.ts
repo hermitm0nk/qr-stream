@@ -1,20 +1,28 @@
 /**
- * Payload reassembly from decoded RLNC generations.
+ * Payload reassembly from decoded RLNC generations, with outer RS recovery.
  *
- * After all generations have been solved, concatenates the source symbols
- * in generation order and trims the result to the exact data length.
+ * After enough generations have been solved (any G out of G+P), recovers
+ * missing source generations using the outer Reed-Solomon code, then
+ * concatenates the source symbols in generation order and trims to the
+ * exact data length.
  *
  * @module
  */
 
+import { sourceGenerationsFromTotal, parityCount, K, MAX_PAYLOAD_SIZE } from '@/core/protocol/constants';
+import { decodeOuterRS } from '@/core/fec/outer_rs';
+
 /**
  * Assemble the original preprocessed payload from solved RLNC generations.
  *
+ * Uses outer Reed-Solomon to recover missing source generations when
+ * enough total generations (source + parity) have been received.
+ *
  * @param solvedGenerations - Map from generation index to the array of K source symbols
- * @param totalGenerations  - Total number of generations in the session
+ * @param totalGenerations  - Total generations in stream (G + P)
  * @param dataLength        - Exact preprocessed size in bytes
  * @returns Concatenated payload bytes, trimmed to dataLength
- * @throws {Error} If a required generation is missing from the map
+ * @throws {Error} If not enough generations are available to recover
  */
 export function assemblePayload(
   solvedGenerations: Map<number, Uint8Array[]>,
@@ -25,26 +33,36 @@ export function assemblePayload(
     return new Uint8Array(0);
   }
 
-  const parts: Uint8Array[] = [];
+  const sourceGens = sourceGenerationsFromTotal(totalGenerations);
+  const P = parityCount(sourceGens);
 
-  for (let g = 0; g < totalGenerations; g++) {
-    const symbols = solvedGenerations.get(g);
-    if (!symbols || symbols.length === 0) {
-      throw new Error(
-        `assemblePayload: generation ${g} has no solved symbols`
-      );
-    }
-    for (const sym of symbols) {
-      parts.push(sym);
-    }
+  if (solvedGenerations.size < sourceGens) {
+    throw new Error(
+      `assemblePayload: only ${solvedGenerations.size} generations solved, ` +
+        `need at least ${sourceGens} (out of ${totalGenerations} total)`,
+    );
   }
 
-  const totalSize = parts.reduce((sum, p) => sum + p.length, 0);
+  // Build chunks from solved generations
+  const receivedChunks = new Map<number, Uint8Array>();
+  for (const [genIdx, symbols] of solvedGenerations) {
+    const chunk = new Uint8Array(K * MAX_PAYLOAD_SIZE);
+    for (let i = 0; i < symbols.length; i++) {
+      chunk.set(symbols[i]!, i * MAX_PAYLOAD_SIZE);
+    }
+    receivedChunks.set(genIdx, chunk);
+  }
+
+  // Apply outer RS to recover missing source generations
+  const sourceChunks = decodeOuterRS(receivedChunks, sourceGens, P);
+
+  // Concatenate all source chunks and trim
+  const totalSize = sourceChunks.reduce((sum, c) => sum + c.length, 0);
   const combined = new Uint8Array(totalSize);
   let offset = 0;
-  for (const part of parts) {
-    combined.set(part, offset);
-    offset += part.length;
+  for (const chunk of sourceChunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
   }
 
   return combined.slice(0, dataLength);

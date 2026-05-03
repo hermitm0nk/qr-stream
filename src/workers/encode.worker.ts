@@ -21,7 +21,6 @@ interface EncodeInput {
 interface EncodeOutput {
   type: 'encoded';
   packets: Uint8Array[];
-  sessionId: number;
   totalGenerations: number;
   stats: {
     originalSize: number;
@@ -35,7 +34,7 @@ interface ErrorOutput {
   message: string;
 }
 
-// ─── Worker handler ───────────────────────────────────────────────────────────────────
+// ─── Worker handler ──────────────────────────────────────────────────────────────
 
 self.onmessage = (e: MessageEvent<EncodeInput>) => {
   const msg = e.data;
@@ -55,12 +54,11 @@ self.onmessage = (e: MessageEvent<EncodeInput>) => {
 function handleEncode(input: EncodeInput): EncodeOutput {
   const originalBytes = new Uint8Array(input.data);
   const result = packetize(originalBytes, input.isText, input.compress, input.filename, input.mimeType);
-  const frames = scheduleFrames(result.packets, result.totalGenerations, result.sessionId);
+  const frames = scheduleFrames(result.packets, result.totalGenerations);
 
   return {
     type: 'encoded',
     packets: frames,
-    sessionId: result.sessionId,
     totalGenerations: result.totalGenerations,
     stats: {
       originalSize: originalBytes.length,

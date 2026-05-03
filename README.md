@@ -73,19 +73,17 @@ src/
 │   │   ├── gif_parser.ts    # GIF decoding (LZW, frame extraction)
 │   │   └── gif_render.ts    # GIF encoding (2-colour palette, gifenc)
 │   ├── preprocess/
-│   │   ├── compress.ts      # (legacy) deflate helpers
-│   │   └── hash.ts          # (legacy) hash helpers
+│   │   └── compress.ts      # (legacy) deflate helpers
 │   ├── protocol/
-│   │   ├── constants.ts     # Protocol version, K/R, sizes, flags
+│   │   ├── constants.ts     # Protocol constants: K/R, sizes, flags
 │   │   ├── crc32c.ts        # CRC32-C (Castagnoli) with lookup table
-│   │   └── packet.ts        # 18-byte fixed header + payload + CRC
+│   │   └── packet.ts        # 8-byte fixed header + payload + CRC
 │   ├── qr/
 │   │   ├── qr_encode.ts     # QR matrix generation (qrcode-generator)
 │   │   ├── qr_decode.ts     # QR decoding wrapper (jsQR)
 │   │   └── frame_raster.ts  # Matrix → RGBA raster (scale, quiet zone)
 │   ├── reconstruct/
-│   │   ├── assemble.ts      # Concatenate generations, trim padding
-│   │   └── verify.ts        # (legacy) verification helpers
+│   │   └── assemble.ts      # Concatenate generations, trim padding
 │   └── sender/
 │       ├── packetizer.ts    # Data → packets: compress, split, wrap metadata
 │       └── scheduler.ts     # Interleave systematic/coded symbols into frames
@@ -119,7 +117,6 @@ src/
 | **jsqr** | QR decoding from `ImageData` (grayscale + adaptive thresholding internally) |
 | **gifenc** | Animated GIF encoder (2-colour palette, LZW compression) |
 | **fflate** | Fast deflate/inflate (compression for large payloads) |
-| **cbor-x** | *(unused in current protocol; legacy dependency)* |
 
 ### Dev / Build
 
@@ -135,7 +132,7 @@ src/
 
 ## The Protocol
 
-There is **one hardcoded profile** — no negotiation, no manifest.
+There is **one hardcoded profile** — no negotiation, no manifest, no session IDs.
 
 ### Profile Constants
 
@@ -145,32 +142,37 @@ There is **one hardcoded profile** — no negotiation, no manifest.
 | ECC Level | **M** (~15% correction) | Survives minor blur/glare |
 | Source symbols per generation (`K`) | **16** | Decoding latency vs. generation count tradeoff |
 | Repair symbols per generation (`R`) | **8** | 50% overhead; handles ~33% frame loss |
-| Symbol payload | **191 bytes** | V10-M capacity (213 B) minus 18 B header minus 4 B CRC |
+| Symbol payload | **201 bytes** | V10-M capacity (213 B) minus 8 B header minus 4 B CRC |
 | Max packet size | **213 bytes** | Fits exactly in V10-M byte mode |
-| Frame delay | **150 ms** | ~6.7 fps; readable by most cameras |
-| Protocol version | **2** | Current revision |
+| Frame delay | **200 ms** | 5 fps; readable by most cameras |
+| Max file size | **~8 MB** | 12-bit generation index × 16 × 201 B ≈ 13 MB; capped at 8 MB |
 
-### Packet Format (fixed 18-byte header)
+### Packet Format (fixed 8-byte header)
 
 All multi-byte fields are **little-endian**.
 
 ```
 Offset  Size  Field
 ─────────────────────────────────────────────────────
- 0      2     Magic: 'QG' (0x51, 0x47)
- 2      1     Protocol version (2)
- 3      1     Flags: IS_TEXT(1), COMPRESSED(2), LAST_GENERATION(4)
- 4      4     Session ID (random 32-bit)
- 8      2     Generation index (0-based)
-10      2     Total generations
-12      1     Symbol index
-13      1     Packet type: 0=SYSTEMATIC, 1=CODED
-14      4     Data length (preprocessed size, before padding)
-18      191   Payload (zero-padded to 191 B)
+ 0      1     Magic: 0x51 ('Q')
+ 1      4     Packed word (32 bits):
+              ├─ bits 0–11   : generation index (0–4095)
+              ├─ bits 12–23  : total generations (0–4095)
+              ├─ bits 24–28  : symbol index (0–31)
+              ├─ bit 29      : isText flag (1 = text, 0 = file)
+              ├─ bit 30      : isLastGeneration flag
+              └─ bit 31      : compressed flag
+ 5      3     Data length (preprocessed size, 24-bit, 0–16,777,215)
+ 8      201   Payload (zero-padded to 201 B)
 209     4     CRC32-C over bytes 0–208
 ```
 
 Total: **213 bytes** → fits in a V10-M QR code.
+
+**Symbol index convention:**
+- `0–15` = systematic symbol (`sourceIndex = symbolIndex`)
+- `16–23` = coded repair symbol (`codedSymbolIndex = symbolIndex − 16`)
+- `24–31` = reserved
 
 ### File Metadata Wrapping
 
@@ -199,7 +201,7 @@ We use **Random Linear Network Coding** with a systematic encoding.
 - Systematic symbols are the original data (identity coefficient vector).
 - Each coded symbol is a random linear combination:  
   `C_j = Σ coeff[i] · S_i`  (multiplication and addition in GF(256)).
-- Coefficients are deterministically derived from `(sessionId, generationIndex, codingSeed)` via a xoshiro128** PRNG.
+- Coefficients are deterministically derived from `(generationIndex, codedSymbolIndex)` via a xoshiro128** PRNG.
 
 **Decoder (`rlnc_decoder.ts`)**:
 - Maintains an augmented coefficient matrix in **reduced row-echelon form (RREF)**.
@@ -233,12 +235,12 @@ We use **Random Linear Network Coding** with a systematic encoding.
 - Uses `gifenc` with a **2-colour global palette** (white, black).
 - Each frame is converted from RGBA to indexed (threshold at 50% brightness).
 - The NETSCAPE 2.0 extension sets loop count to infinity.
-- Default delay: 150 ms per frame.
+- Default delay: 200 ms per frame (5 fps).
 
 ### 6. Frame Scheduling (`scheduler.ts`)
 
 - Systematic symbols are interleaved across generations first, then coded symbols.
-- Generation order is deterministically shuffled using the session ID as a seed.
+- Generation order is deterministically shuffled using `totalGenerations` as a seed.
 - This spreads redundancy evenly: if you watch any prefix of the GIF, you see some symbols from every generation.
 
 ---
@@ -257,7 +259,7 @@ Text or File
 [Optional deflate compression (fflate)]
     │
     ▼
-Split into 191-byte symbols
+Split into 201-byte symbols
     │
     ▼
 Group into generations of K=16
@@ -266,7 +268,7 @@ Group into generations of K=16
 RLNC encode each generation → 16 systematic + 8 coded symbols
     │
     ▼
-Build packets (18-byte header + payload + CRC32C)
+Build packets (8-byte header + payload + CRC32C)
     │
     ▼
 Schedule frames (interleave systematic, then coded, shuffle generations)
@@ -275,7 +277,7 @@ Schedule frames (interleave systematic, then coded, shuffle generations)
 Rasterize each packet to QR code (V10-M, scale=3, 4-module quiet zone)
     │
     ▼
-Encode frames into animated GIF (2-colour palette, 150 ms delay)
+Encode frames into animated GIF (2-colour palette, 200 ms delay)
     │
     ▼
 Blob URL → <img> preview + download
@@ -296,10 +298,10 @@ Decode QR with jsQR → raw bytes
 Parse packet (verify magic, verify CRC32C)
     │
     ▼
-Deduplicate by (generation, type, symbolIndex)
+Deduplicate by (generationIndex, symbolIndex)
     │
     ▼
-Feed to RLNC decoder
+Feed to RLNC decoder (systematic or coded based on symbolIndex)
     │
     ▼
 When rank == K for a generation → mark solved
@@ -362,7 +364,7 @@ done
 
 ### Why a single hardcoded profile?
 
-Sender and receiver are the same codebase. There is no need for profile negotiation, manifest parsing, or version selection. Removing the manifest simplified the packet format from variable-length CBOR to a fixed 18-byte header.
+Sender and receiver are the same codebase. There is no need for profile negotiation, manifest parsing, or version selection. Removing the manifest and session ID simplified the packet format to a compact 8-byte header.
 
 ### Why RLNC instead of simple repetition?
 
@@ -380,7 +382,7 @@ GIF is universally supported, requires no codecs, and every frame is a full stil
 
 - **Encode worker**: packetization + scheduling is CPU-bound and blocks the main thread for large files.
 - **GIF worker**: GIF encoding (LZW) is CPU-bound.
-- **Decode worker**: RLNC Gaussian elimination and QR decoding run at 6–7 fps and must not freeze the UI.
+- **Decode worker**: RLNC Gaussian elimination and QR decoding run at 5 fps and must not freeze the UI.
 
 ---
 

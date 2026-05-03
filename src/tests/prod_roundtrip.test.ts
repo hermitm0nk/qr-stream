@@ -13,12 +13,11 @@ import { parsePacket } from '@/core/protocol/packet';
 import { GenerationDecoder } from '@/core/fec/rlnc_decoder';
 import { assemblePayload } from '@/core/reconstruct/assemble';
 import {
-  PacketType,
   K,
   MAX_PAYLOAD_SIZE,
   QR_VERSION,
   ECC_LEVEL,
-  FRAME_DELAY,
+  FRAME_DELAY_MS,
 } from '@/core/protocol/constants';
 
 describe('Production Roundtrip', () => {
@@ -29,7 +28,7 @@ describe('Production Roundtrip', () => {
     const result = packetize(payload, false, true);
     expect(result.isCompressed).toBe(true);
 
-    const frames = scheduleFrames(result.packets, result.totalGenerations, result.sessionId);
+    const frames = scheduleFrames(result.packets, result.totalGenerations);
 
     // Build GIF (production path)
     const imageFrames: Uint8Array[] = [];
@@ -44,7 +43,7 @@ describe('Production Roundtrip', () => {
       }
       imageFrames.push(new Uint8Array(imageData.data.buffer));
     }
-    const gifBytes = createQRGif(imageFrames, FRAME_DELAY * 10, width, height);
+    const gifBytes = createQRGif(imageFrames, FRAME_DELAY_MS, width, height);
 
     // Parse GIF (receiver file-upload path)
     const gifData = parseGif(gifBytes);
@@ -55,7 +54,7 @@ describe('Production Roundtrip', () => {
       if ((i + 1) % 5 !== 0) keepIndices.add(i);
     }
 
-    const decoder = new GenerationDecoder(K, MAX_PAYLOAD_SIZE, result.sessionId, 0);
+    const decoder = new GenerationDecoder(K, MAX_PAYLOAD_SIZE);
     const solvedGens = new Set<number>();
 
     for (let i = 0; i < gifData.frames.length; i++) {
@@ -67,21 +66,22 @@ describe('Production Roundtrip', () => {
       if (!decodedBytes) continue;
 
       const pkt = parsePacket(decodedBytes);
-      if (pkt.header.packetType === PacketType.DATA_SYSTEMATIC) {
+      const isSystematic = pkt.header.symbolIndex < K;
+      if (isSystematic) {
         decoder.addSystematicSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex);
       } else {
-        decoder.addCodedSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex);
+        decoder.addCodedSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex - K);
       }
       if (decoder.isSolved(pkt.header.generationIndex)) {
         solvedGens.add(pkt.header.generationIndex);
       }
     }
 
-    expect(solvedGens.size).toBe(result.totalGenerations);
+    expect(solvedGens.size).toBeGreaterThanOrEqual(result.sourceGenerations);
 
     const solvedMap = new Map<number, Uint8Array[]>();
-    for (let g = 0; g < result.totalGenerations; g++) {
-      solvedMap.set(g, decoder.getSourceSymbols(g)!);
+    for (const genIdx of solvedGens) {
+      solvedMap.set(genIdx, decoder.getSourceSymbols(genIdx)!);
     }
 
     const { inflateSync } = await import('fflate');

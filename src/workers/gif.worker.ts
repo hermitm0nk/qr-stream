@@ -8,7 +8,7 @@
 import { generateQRMatrix } from '@/core/qr/qr_encode';
 import { rasterizeQR } from '@/core/qr/frame_raster';
 import { createQRGif } from '@/core/gif/gif_render';
-import { QR_VERSION, ECC_LEVEL, FRAME_DELAY } from '@/core/protocol/constants';
+import { QR_VERSION, ECC_LEVEL, FRAME_DELAY_MS } from '@/core/protocol/constants';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -30,7 +30,7 @@ interface ErrorOutput {
   message: string;
 }
 
-// ─── Worker handler ─────────────────────────────────────────────────────────────────u2500
+// ─── Worker handler ──────────────────────────────────────────────────────────────
 
 self.onmessage = (e: MessageEvent<GenerateInput>) => {
   const msg = e.data;
@@ -55,7 +55,7 @@ function handleGenerate(input: GenerateInput): GifOutput {
   const totalModules = moduleCount + quietModules;
   const scale = Math.max(2, Math.round(targetPx / totalModules));
 
-  // ─── Generate QR matrix for each packet ────────────────────────────────────
+  // ─── Generate QR matrix for each packet ─────────────────────────────────────────
   const frames: Uint8Array[] = [];
   let width = 0;
   let height = 0;
@@ -71,9 +71,8 @@ function handleGenerate(input: GenerateInput): GifOutput {
     frames.push(new Uint8Array(imageData.data.buffer));
   }
 
-  // ─── Create animated GIF ────────────────────────────────────────────────
-  const delayMs = FRAME_DELAY * 10; // cs → ms
-  const gifBytes = createQRGif(frames, delayMs, width, height);
+  // ─── Create animated GIF ───────────────────────────────────────────────
+  const gifBytes = createQRGif(frames, FRAME_DELAY_MS, width, height);
 
   return {
     type: 'gifReady',

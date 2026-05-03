@@ -4,7 +4,7 @@
  * Given K source symbols, generates R coded repair symbols where each
  * coded symbol is a linear combination of all source symbols with
  * coefficients drawn from GF(256). The coefficient vectors are
- * deterministically derived from (session_id, generation_index, coding_seed)
+ * deterministically derived from (generation_index, coded_symbol_index)
  * using the xoshiro128** PRNG.
  *
  * @module
@@ -15,8 +15,6 @@ import { Xoshiro128 } from './xoshiro';
 
 /**
  * A coded symbol with its coefficient vector.
- * The coefficients define the linear combination of source symbols
- * that produced this symbol.
  */
 export interface CodedSymbol {
   /** The coefficient vector (length K), each element in GF(256) */
@@ -30,46 +28,23 @@ export interface CodedSymbol {
 }
 
 /**
- * A source symbol — raw data bytes with its index in the generation.
- */
-export interface SourceSymbol {
-  index: number;
-  data: Uint8Array;
-}
-
-/**
- * Derive a deterministic 32-bit seed from session/generation/coding parameters.
+ * Derive a deterministic 32-bit seed from generation and coded-symbol index.
  *
- * Uses a simple mixing function (xorshift32 on each component combined).
- *
- * @param sessionId - Session identifier (narrowed to 32 bits)
- * @param generationIndex - Index of this generation within the session
- * @param codingSeed - Extra coding seed parameter
+ * @param generationIndex - Index of this generation
+ * @param codedSymbolIndex - Index among coded symbols (0-based)
  * @returns A 32-bit unsigned integer seed
  */
 export function deriveCoefficientSeed(
-  sessionId: number,
   generationIndex: number,
-  codingSeed: number
+  codedSymbolIndex: number,
 ): number {
-  // Mix the three components using xorshift32-style operations
-  let seed = (sessionId >>> 0) ^ ((generationIndex << 13) | (generationIndex >>> 19));
-  seed = (seed ^ (seed >> 7)) * 0x9e3779b9;
-  seed = seed ^ (seed >> 17) ^ codingSeed;
-  seed = (seed ^ (seed >> 5)) * 0x85ebca6b;
-  seed = seed ^ (seed >> 13);
-  return seed >>> 0;
+  const gen = generationIndex >>> 0;
+  const idx = (codedSymbolIndex + 1) >>> 0;
+  return ((gen * 0x9e3779b9) ^ (idx * 0x85ebca6b) ^ (gen >>> 16) ^ (idx << 16)) >>> 0;
 }
 
 /**
  * Generate a non-zero coefficient vector of length K from a seed.
- *
- * Uses xoshiro128** seeded with the given seed to generate K random
- * bytes. If the resulting vector would be all-zero, re-rolls.
- *
- * @param k - Number of source symbols (length of coefficient vector)
- * @param seed - 32-bit seed for the PRNG
- * @returns A Uint8Array of length K with non-zero coefficients
  */
 export function generateCoefficients(k: number, seed: number): Uint8Array {
   const rng = new Xoshiro128(seed);
@@ -82,14 +57,12 @@ export function generateCoefficients(k: number, seed: number): Uint8Array {
   do {
     allZero = false;
     for (let i = 0; i < k; i++) {
-      // Generate a random non-zero GF(256) element
       let v: number;
       do {
         v = rng.nextByte();
       } while (v === 0);
       coeffs[i] = v;
     }
-    // Check if all zero (shouldn't happen given non-zero generation, but guard)
     allZero = true;
     for (let i = 0; i < k; i++) {
       if (coeffs[i] !== 0) {
@@ -99,7 +72,6 @@ export function generateCoefficients(k: number, seed: number): Uint8Array {
     }
     attempts++;
     if (attempts >= MAX_ATTEMPTS) {
-      // Fallback: force at least one coefficient to 1
       coeffs[0] = 1;
       allZero = false;
     }
@@ -111,31 +83,21 @@ export function generateCoefficients(k: number, seed: number): Uint8Array {
 /**
  * Encode a generation of K source symbols into K systematic + R coded symbols.
  *
- * The first K output symbols are the source symbols themselves (systematic
- * encoding). The remaining R symbols are random linear combinations of all
- * K source symbols over GF(256).
- *
- * @param sourceSymbols - Array of K source symbol data arrays (each Uint8Array of equal length)
+ * @param sourceSymbols - Array of K source symbol data arrays
  * @param k - Number of source symbols in the generation
  * @param r - Number of coded repair symbols to generate
- * @param sessionId - Session identifier for deterministic coefficient generation
  * @param generationIndex - Index of this generation within the session
- * @param codingSeed - Additional seed parameter for coefficient derivation
  * @returns Array of (k + r) CodedSymbols: k systematic followed by r coded
- * @throws {RangeError} If sourceSymbols length doesn't match k, or symbols have unequal lengths
  */
 export function encodeGeneration(
   sourceSymbols: Uint8Array[],
   k: number,
   r: number,
-  sessionId: number,
   generationIndex: number,
-  codingSeed: number
 ): CodedSymbol[] {
-  // Validate inputs
   if (sourceSymbols.length !== k) {
     throw new RangeError(
-      `encodeGeneration: expected ${k} source symbols, got ${sourceSymbols.length}`
+      `encodeGeneration: expected ${k} source symbols, got ${sourceSymbols.length}`,
     );
   }
 
@@ -148,47 +110,38 @@ export function encodeGeneration(
     if (sourceSymbols[i].length !== symbolLength) {
       throw new RangeError(
         `encodeGeneration: symbol at index ${i} has length ${sourceSymbols[i].length}, ` +
-        `expected ${symbolLength}`
+        `expected ${symbolLength}`,
       );
     }
   }
 
   const results: CodedSymbol[] = [];
 
-  // 1. Systematic symbols: output the source symbols directly
+  // 1. Systematic symbols
   for (let i = 0; i < k; i++) {
     const coeffs = new Uint8Array(k);
-    coeffs[i] = 1; // Only coefficient i is non-zero (identity vector)
+    coeffs[i] = 1;
 
     results.push({
       coefficients: coeffs,
-      data: new Uint8Array(sourceSymbols[i]), // Copy to avoid mutation
+      data: new Uint8Array(sourceSymbols[i]),
       isSystematic: true,
       sourceIndex: i,
     });
   }
 
-  // 2. Coded repair symbols: random linear combinations
+  // 2. Coded repair symbols
   for (let j = 0; j < r; j++) {
-    // Derive a unique seed for this repair symbol
-    // Mix the repair index into the seed to get distinct vectors
-    const symbolSeed =
-      deriveCoefficientSeed(sessionId, generationIndex, codingSeed) ^
-      ((j + 1) * 0x9e3779b9) >>> 0;
-
+    const symbolSeed = deriveCoefficientSeed(generationIndex, j);
     const coeffs = generateCoefficients(k, symbolSeed);
 
-    // Compute C = Σ coeff[i] * sourceSymbols[i] over GF(256)
     const codedData = new Uint8Array(symbolLength);
-
     for (let i = 0; i < k; i++) {
       const coeff = coeffs[i];
       if (coeff === 0) continue;
-
-      // For each byte in the symbol: codedData[byte] += coeff * source[i][byte]
       const src = sourceSymbols[i];
       for (let b = 0; b < symbolLength; b++) {
-        codedData[b] ^= mul(coeff, src[b]);  // mul then XOR (addition in GF(256))
+        codedData[b] ^= mul(coeff, src[b]);
       }
     }
 

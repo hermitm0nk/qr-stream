@@ -9,18 +9,19 @@ import { inflateSync } from 'fflate';
 import { decodeQRFromCanvas } from '@/core/qr/qr_decode';
 import { parsePacket } from '@/core/protocol/packet';
 import type { Packet } from '@/core/protocol/packet';
-import { PacketType, K, MAX_PAYLOAD_SIZE } from '@/core/protocol/constants';
+import { K, MAX_PAYLOAD_SIZE, sourceGenerationsFromTotal } from '@/core/protocol/constants';
 import { GenerationDecoder } from '@/core/fec/rlnc_decoder';
+import { assemblePayload } from '@/core/reconstruct/assemble';
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
 interface DecodeState {
-  sessionId: number;
   decoder: GenerationDecoder;
   dedup: Set<string>;
   receivedPackets: number;
   solvedGenerations: Set<number>;
   totalGenerations: number;
+  sourceGenerations: number;
   dataLength: number;
   isText: boolean;
   isCompressed: boolean;
@@ -34,7 +35,7 @@ interface DecodeState {
 
 let current: DecodeState | null = null;
 
-// ─── Worker handler ──────────────────────────────────────────────────────────
+// ─── Worker handler ───────────────────────────────────────────────────────────
 
 self.onmessage = (e: MessageEvent) => {
   const msg = e.data;
@@ -68,7 +69,7 @@ self.onmessage = (e: MessageEvent) => {
   }
 };
 
-// ─── Frame handling ──────────────────────────────────────────────────────────
+// ─── Frame handling ───────────────────────────────────────────────────────────
 
 function handleFrame(imageData: ImageData): void {
   const decoded = decodeQRFromCanvas(imageData, { inversionAttempts: 'attemptBoth' });
@@ -82,20 +83,20 @@ function handleFrame(imageData: ImageData): void {
   }
 
   const h = packet.header;
-  const sessionId = h.sessionId;
 
-  // Start fresh if this is a new session
-  if (!current || current.sessionId !== sessionId) {
+  // Start fresh on first valid packet
+  if (!current) {
+    const sourceGens = sourceGenerationsFromTotal(h.totalGenerations);
     current = {
-      sessionId,
-      decoder: new GenerationDecoder(K, MAX_PAYLOAD_SIZE, sessionId, 0),
+      decoder: new GenerationDecoder(K, MAX_PAYLOAD_SIZE),
       dedup: new Set(),
       receivedPackets: 0,
       solvedGenerations: new Set(),
       totalGenerations: h.totalGenerations,
+      sourceGenerations: sourceGens,
       dataLength: h.dataLength,
-      isText: (h.flags & 1) !== 0,
-      isCompressed: (h.flags & 2) !== 0,
+      isText: h.isText,
+      isCompressed: h.compressed,
       completed: false,
       stats: { totalFrames: 0, framesWithQR: 0, acceptedPackets: 0 },
     };
@@ -105,14 +106,15 @@ function handleFrame(imageData: ImageData): void {
 
   // Update metadata from header
   current.totalGenerations = h.totalGenerations;
+  current.sourceGenerations = sourceGenerationsFromTotal(h.totalGenerations);
   current.dataLength = h.dataLength;
-  current.isText = (h.flags & 1) !== 0;
-  current.isCompressed = (h.flags & 2) !== 0;
+  current.isText = h.isText;
+  current.isCompressed = h.compressed;
 
   current.stats.totalFrames++;
 
-  // Dedup: generationIndex:packetType:symbolIndex
-  const dedupKey = `${h.generationIndex}:${h.packetType}:${h.symbolIndex}`;
+  // Dedup: generationIndex:symbolIndex
+  const dedupKey = `${h.generationIndex}:${h.symbolIndex}`;
   if (current.dedup.has(dedupKey)) return;
   current.dedup.add(dedupKey);
   current.stats.framesWithQR++;
@@ -120,11 +122,12 @@ function handleFrame(imageData: ImageData): void {
   // Feed to decoder
   const gen = h.generationIndex;
   let accepted = false;
+  const isSystematic = h.symbolIndex < K;
 
-  if (h.packetType === PacketType.DATA_SYSTEMATIC) {
+  if (isSystematic) {
     accepted = current.decoder.addSystematicSymbol(gen, packet.payload, h.symbolIndex);
   } else {
-    accepted = current.decoder.addCodedSymbol(gen, packet.payload, h.symbolIndex);
+    accepted = current.decoder.addCodedSymbol(gen, packet.payload, h.symbolIndex - K);
   }
 
   if (accepted) {
@@ -134,7 +137,8 @@ function handleFrame(imageData: ImageData): void {
     if (current.decoder.isSolved(gen)) {
       current.solvedGenerations.add(gen);
 
-      if (current.solvedGenerations.size >= current.totalGenerations) {
+      // We only need sourceGenerations generations solved (any mix of source + parity)
+      if (current.solvedGenerations.size >= current.sourceGenerations) {
         reconstructData(current);
         if (current.completed) {
           reportProgress(current);
@@ -147,43 +151,42 @@ function handleFrame(imageData: ImageData): void {
   reportProgress(current);
 }
 
-// ─── Reconstruct original data from all source symbols ──────────────────────
+// ─── Reconstruct original data from all source symbols ────────────────────────
 
 function reconstructData(state: DecodeState): void {
   const decoder = state.decoder;
 
-  // Collect preprocessed data from each generation's source symbols
-  const preprocessedParts: Uint8Array[] = [];
-
-  for (let gen = 0; gen < state.totalGenerations; gen++) {
-    const symbols = decoder.getSourceSymbols(gen);
+  // Build solved generations map for assemblePayload
+  const solvedMap = new Map<number, Uint8Array[]>();
+  for (const genIdx of Array.from(state.solvedGenerations)) {
+    const symbols = decoder.getSourceSymbols(genIdx);
     if (!symbols) {
       self.postMessage({
         type: 'error',
-        message: `Generation ${gen} not solved — reconstruction aborted`,
+        message: `Generation ${genIdx} reported solved but has no source symbols`,
       });
       return;
     }
-    for (const sym of symbols) {
-      preprocessedParts.push(new Uint8Array(sym));
-    }
+    solvedMap.set(genIdx, symbols.map((s) => new Uint8Array(s)));
   }
 
-  // Concatenate and trim to exact dataLength
-  const totalSize = preprocessedParts.reduce((s, p) => s + p.length, 0);
-  const combined = new Uint8Array(totalSize);
-  let offset = 0;
-  for (const part of preprocessedParts) {
-    combined.set(part, offset);
-    offset += part.length;
+  // Use assemblePayload which handles outer RS recovery
+  let preprocessed: Uint8Array;
+  try {
+    preprocessed = assemblePayload(solvedMap, state.totalGenerations, state.dataLength);
+  } catch (err: any) {
+    self.postMessage({
+      type: 'error',
+      message: `Reassembly failed: ${err.message ?? String(err)}`,
+    });
+    return;
   }
-  const trimmed = combined.slice(0, state.dataLength);
 
   // Decompress if needed
   let finalData: Uint8Array;
   if (state.isCompressed) {
     try {
-      finalData = inflateSync(trimmed);
+      finalData = inflateSync(preprocessed);
     } catch (err) {
       self.postMessage({
         type: 'error',
@@ -192,7 +195,7 @@ function reconstructData(state: DecodeState): void {
       return;
     }
   } else {
-    finalData = trimmed;
+    finalData = preprocessed;
   }
 
   // Parse optional filename/mime metadata for file mode
@@ -224,6 +227,7 @@ function reconstructData(state: DecodeState): void {
       type: 'complete',
       isText: true,
       text,
+      autoStop: true,
     });
   } else {
     self.postMessage(
@@ -231,8 +235,9 @@ function reconstructData(state: DecodeState): void {
         type: 'complete',
         isText: false,
         data: finalData.buffer,
-        filename: filename || `recovered-${state.sessionId.toString(16).padStart(8, '0')}`,
+        filename: filename || `recovered-${Date.now().toString(36)}`,
         mime: mime || 'application/octet-stream',
+        autoStop: true,
       },
       { transfer: [finalData.buffer as ArrayBuffer] },
     );
@@ -241,12 +246,12 @@ function reconstructData(state: DecodeState): void {
   state.completed = true;
 }
 
-// ─── Progress reporting ──────────────────────────────────────────────────────
+// ─── Progress reporting ──────────────────────────────────────────────────────────
 
 function reportProgress(state: DecodeState): void {
   const totalGens = state.totalGenerations;
   const solvedGens = state.solvedGenerations.size;
-  const needed = totalGens > 0 ? K * totalGens : 0;
+  const needed = state.sourceGenerations > 0 ? K * state.sourceGenerations : 0;
 
   self.postMessage({
     type: 'progress',
@@ -257,8 +262,10 @@ function reportProgress(state: DecodeState): void {
     receivedPackets: state.receivedPackets,
     solvedGenerations: solvedGens,
     totalGenerations: totalGens,
+    sourceGenerations: state.sourceGenerations,
+    dataLength: state.dataLength,
     status: totalGens > 0
-      ? `Receiving (${solvedGens}/${totalGens} gens)`
+      ? `Receiving (${solvedGens}/${state.sourceGenerations} gens)`
       : 'Receiving…',
   });
 }

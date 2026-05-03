@@ -21,7 +21,6 @@
     "typescript": "5.7.3"
   },
   "dependencies": {
-    "cbor-x": "^1.6.4",
     "fflate": "^0.8.2",
     "gifenc": "^1.0.3",
     "jsqr": "^1.4.0",

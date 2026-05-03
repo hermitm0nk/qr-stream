@@ -1,42 +1,36 @@
 /**
- * Sender-side packetizer — single profile, no manifest.
+ * Sender-side packetizer — single profile, no manifest, with outer RS.
  *
  * Steps:
  *   1. Optional metadata wrapping (filename + mime for files)
  *   2. Optional compression (deflate-raw)
- *   3. Split preprocessed data into 191-byte symbols
- *   4. Group into generations of K=16
- *   5. RLNC encode each generation (16 systematic + 8 coded)
- *   6. Build transport packets with metadata in every header
+ *   3. Split preprocessed data into 201-byte symbols
+ *   4. Group into G source generations of K=16 symbols each
+ *   5. Apply outer Reed-Solomon to create P parity generations
+ *   6. RLNC encode all G+P generations (16 systematic + 8 coded each)
+ *   7. Build transport packets with metadata in every header
  *
  * @module
  */
 
-import {
-  PROTOCOL_VERSION,
-  PacketType,
-  Flags,
-  K,
-  R,
-  MAX_PAYLOAD_SIZE,
-  createSessionId,
-} from '@/core/protocol/constants';
+import { K, R, MAX_PAYLOAD_SIZE, parityCount } from '@/core/protocol/constants';
 import { PacketHeader, createPacket } from '@/core/protocol/packet';
 import { encodeGeneration } from '@/core/fec/rlnc_encoder';
+import { encodeOuterRS } from '@/core/fec/outer_rs';
 import { deflateSync } from 'fflate';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface PacketizerResult {
   packets: Uint8Array[];
-  sessionId: number;
   totalGenerations: number;
+  sourceGenerations: number;
   dataLength: number;
   isText: boolean;
   isCompressed: boolean;
 }
 
-// ─── Packetizer ───────────────────────────────────────────────────────────────────
+// ─── Packetizer ──────────────────────────────────────────────────────────────
 
 /**
  * Encode raw data into transport packets.
@@ -103,68 +97,71 @@ export function packetize(
   }
 
   const totalSymbols = symbols.length;
-  const totalGenerations = Math.max(1, Math.ceil(totalSymbols / K));
-  const sessionId = createSessionId();
-  const codingSeed = 0;
+  const sourceGenerations = Math.max(1, Math.ceil(totalSymbols / K));
+  const P = parityCount(sourceGenerations);
+  const totalGenerations = sourceGenerations + P;
 
-  // 4. Encode generations and build packets
-  const packets: Uint8Array[] = [];
-
-  for (let gen = 0; gen < totalGenerations; gen++) {
+  // 4. Build source chunks (K symbols each, padded with zeros if needed)
+  const sourceChunks: Uint8Array[] = [];
+  for (let gen = 0; gen < sourceGenerations; gen++) {
     const startIdx = gen * K;
     const genSymbolsCount = Math.min(K, totalSymbols - startIdx);
-    const isLastGen = gen === totalGenerations - 1;
-
-    const genSourceSymbols: Uint8Array[] = [];
+    const chunk = new Uint8Array(K * MAX_PAYLOAD_SIZE);
     for (let i = 0; i < K; i++) {
       if (i < genSymbolsCount) {
-        genSourceSymbols.push(symbols[startIdx + i]!);
-      } else {
-        genSourceSymbols.push(new Uint8Array(MAX_PAYLOAD_SIZE));
+        chunk.set(symbols[startIdx + i]!, i * MAX_PAYLOAD_SIZE);
       }
+      // else: leave as zeros (padding)
+    }
+    sourceChunks.push(chunk);
+  }
+
+  // 5. Apply outer Reed-Solomon to create parity chunks
+  const parityChunks = encodeOuterRS(sourceChunks, P);
+
+  // 6. RLNC encode all chunks and build packets
+  const packets: Uint8Array[] = [];
+  const allChunks = [...sourceChunks, ...parityChunks];
+
+  for (let gen = 0; gen < allChunks.length; gen++) {
+    const chunk = allChunks[gen]!;
+    const isSourceGen = gen < sourceGenerations;
+    const isLastSourceGen = gen === sourceGenerations - 1;
+    const isLastGen = gen === allChunks.length - 1;
+
+    // Split chunk into K symbols
+    const genSymbols: Uint8Array[] = [];
+    for (let i = 0; i < K; i++) {
+      genSymbols.push(chunk.slice(i * MAX_PAYLOAD_SIZE, (i + 1) * MAX_PAYLOAD_SIZE));
     }
 
-    const codedSymbols = encodeGeneration(
-      genSourceSymbols,
-      K,
-      R,
-      sessionId,
-      gen,
-      codingSeed,
-    );
+    const codedSymbols = encodeGeneration(genSymbols, K, R, gen);
 
-    const flagsBase =
-      (isText ? Flags.IS_TEXT : 0) |
-      (isCompressed ? Flags.COMPRESSED : 0) |
-      (isLastGen ? Flags.LAST_GENERATION : 0);
-
-    // Systematic symbols
+    // Systematic symbols: symbolIndex = sourceIndex (0–15)
     for (let i = 0; i < K; i++) {
       const cs = codedSymbols[i]!;
       const header: PacketHeader = {
-        protocolVersion: PROTOCOL_VERSION,
-        flags: flagsBase,
-        sessionId,
         generationIndex: gen,
-        totalGenerations,
+        totalGenerations: totalGenerations,
         symbolIndex: cs.sourceIndex,
-        packetType: PacketType.DATA_SYSTEMATIC,
+        isText,
+        isLastGeneration: isLastGen,
+        compressed: isCompressed,
         dataLength,
       };
       packets.push(createPacket(header, cs.data));
     }
 
-    // Coded symbols
+    // Coded symbols: symbolIndex = 16 + j
     for (let j = 0; j < R; j++) {
       const cs = codedSymbols[K + j]!;
       const header: PacketHeader = {
-        protocolVersion: PROTOCOL_VERSION,
-        flags: flagsBase,
-        sessionId,
         generationIndex: gen,
-        totalGenerations,
-        symbolIndex: j,
-        packetType: PacketType.DATA_CODED,
+        totalGenerations: totalGenerations,
+        symbolIndex: 16 + j,
+        isText,
+        isLastGeneration: isLastGen,
+        compressed: isCompressed,
         dataLength,
       };
       packets.push(createPacket(header, cs.data));
@@ -173,8 +170,8 @@ export function packetize(
 
   return {
     packets,
-    sessionId,
     totalGenerations,
+    sourceGenerations,
     dataLength,
     isText,
     isCompressed,

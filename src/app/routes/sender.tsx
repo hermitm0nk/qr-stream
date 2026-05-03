@@ -208,7 +208,6 @@ export function SenderPage() {
 
       const encoded = await new Promise<{
         packets: Uint8Array[];
-        sessionId: number;
         totalGenerations: number;
         stats: { originalSize: number; preprocessedSize: number; frameCount: number };
       }>((resolve, reject) => {

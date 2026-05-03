@@ -142,6 +142,8 @@ export function ReceiverPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
+  const textResultRef = useRef<HTMLDivElement>(null);
+  const fileResultRef = useRef<HTMLDivElement>(null);
   const workerRef = useRef<Worker | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animRef = useRef<number>(0);
@@ -154,13 +156,17 @@ export function ReceiverPage() {
   const [framesWithQR, setFramesWithQR] = useState(0);
   const [acceptedPackets, setAcceptedPackets] = useState(0);
   const [neededPackets, setNeededPackets] = useState(0);
-  const [solvedGens, setSolvedGens] = useState(0);
-  const [totalGens, setTotalGens] = useState(0);
   const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
   const [receivedText, setReceivedText] = useState('');
   const [error, setError] = useState('');
   const [zoomLevel, setZoomLevel] = useState(1);
   const [hasZoomSupport, setHasZoomSupport] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [throughputKbps, setThroughputKbps] = useState(0);
+  const [solvedGens, setSolvedGens] = useState(0);
+  const [sourceGens, setSourceGens] = useState(0);
+  const scanStartRef = useRef<number>(0);
+  const dataLengthRef = useRef<number>(0);
 
   // ── Create decode worker ───────────────────────────────────────────────
   function createWorker(): Worker {
@@ -177,8 +183,19 @@ export function ReceiverPage() {
           setFramesWithQR(msg.framesWithQR ?? 0);
           setAcceptedPackets(msg.acceptedPackets ?? 0);
           setNeededPackets(msg.neededPackets ?? 0);
-          setSolvedGens(msg.solvedGenerations);
-          setTotalGens(msg.totalGenerations);
+          setSolvedGens(msg.solvedGenerations ?? 0);
+          setSourceGens(msg.sourceGenerations ?? 0);
+          if (msg.dataLength) {
+            dataLengthRef.current = msg.dataLength;
+          }
+          if (scanStartRef.current > 0) {
+            const elapsed = Date.now() - scanStartRef.current;
+            setElapsedMs(elapsed);
+            const bytes = dataLengthRef.current;
+            if (bytes > 0 && elapsed > 0) {
+              setThroughputKbps((bytes / 1024) / (elapsed / 1000));
+            }
+          }
           setStatus(msg.status);
           break;
         }
@@ -194,7 +211,29 @@ export function ReceiverPage() {
             });
             setReceivedText('');
           }
+          const elapsed = scanStartRef.current > 0 ? Date.now() - scanStartRef.current : 0;
+          setElapsedMs(elapsed);
+          const bytes = dataLengthRef.current || (msg.data?.byteLength ?? msg.text?.length ?? 0);
+          if (bytes > 0 && elapsed > 0) {
+            setThroughputKbps((bytes / 1024) / (elapsed / 1000));
+          }
           setStatus('Complete ✓');
+
+          // Auto-stop scanning if requested by worker
+          if (msg.autoStop) {
+            stopScanning();
+          }
+
+          // Auto-scroll to result
+          requestAnimationFrame(() => {
+            setTimeout(() => {
+              if (msg.isText && textResultRef.current) {
+                textResultRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              } else if (!msg.isText && fileResultRef.current) {
+                fileResultRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            }, 100);
+          });
           break;
         }
         case 'error': {
@@ -211,7 +250,7 @@ export function ReceiverPage() {
     return w;
   }
 
-  // ── Try to set camera zoom via getUserMedia constraints ──────────────
+  // ── Try to set camera zoom via getUserMedia constraints ─────────────
   const applyCameraZoom = useCallback(async (level: number) => {
     const stream = streamRef.current;
     if (!stream) return;
@@ -232,7 +271,7 @@ export function ReceiverPage() {
     }
   }, []);
 
-  // ── Start camera scanning ────────────────────────────────────────────
+  // ── Start camera scanning ───────────────────────────────────────────────
   const startCameraScanning = useCallback(async () => {
     setError('');
     setReceivedFile(null);
@@ -241,8 +280,12 @@ export function ReceiverPage() {
     setFramesWithQR(0);
     setAcceptedPackets(0);
     setNeededPackets(0);
+    setElapsedMs(0);
+    setThroughputKbps(0);
     setSolvedGens(0);
-    setTotalGens(0);
+    setSourceGens(0);
+    scanStartRef.current = Date.now();
+    dataLengthRef.current = 0;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -311,8 +354,12 @@ export function ReceiverPage() {
     setFramesWithQR(0);
     setAcceptedPackets(0);
     setNeededPackets(0);
+    setElapsedMs(0);
+    setThroughputKbps(0);
     setSolvedGens(0);
-    setTotalGens(0);
+    setSourceGens(0);
+    scanStartRef.current = Date.now();
+    dataLengthRef.current = 0;
 
     const worker = createWorker();
     workerRef.current = worker;
@@ -352,7 +399,7 @@ export function ReceiverPage() {
     }
   }, []);
 
-  // ── Stop scanning ─────────────────────────────────────────────────────
+  // ── Stop scanning ──────────────────────────────────────────────────────────
   const stopScanning = useCallback(() => {
     setScanning(false);
     scanningRef.current = false;
@@ -375,7 +422,7 @@ export function ReceiverPage() {
     setZoomLevel(1);
   }, []);
 
-  // ── Capture frame from camera (software crop + optional camera zoom) ───
+  // ── Capture frame from camera (software crop + optional camera zoom) ───────
   const captureFrame = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -417,7 +464,7 @@ export function ReceiverPage() {
     worker.postMessage({ type: 'frame', imageData });
   }, [zoomLevel]);
 
-  // ── Download recovered file ─────────────────────────────────────────────
+  // ── Download recovered file ──────────────────────────────────────────────
   const handleDownload = useCallback(() => {
     if (!receivedFile) return;
     const blob = new Blob([receivedFile.data], { type: receivedFile.mime });
@@ -431,7 +478,7 @@ export function ReceiverPage() {
     URL.revokeObjectURL(url);
   }, [receivedFile]);
 
-  // ── Cleanup on unmount ───────────────────────────────────────────────
+  // ── Cleanup on unmount ─────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       cancelAnimationFrame(animRef.current);
@@ -444,10 +491,10 @@ export function ReceiverPage() {
     };
   }, []);
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────────────────
   return (
     <div>
-      {/* ── Input mode toggle ───────────────────────────────────────────────── */}
+      {/* ── Input mode toggle ─────────────────────────────────────────────────────── */}
       <div style={S.section}>
         <div style={S.label}>Input Mode</div>
         <div style={S.toggleGroup}>
@@ -507,12 +554,16 @@ export function ReceiverPage() {
                 useful <span style={S.statValue}>{acceptedPackets}</span>
               </span>
               <span>
-                need <span style={S.statValue}>{neededPackets}</span>
+                gens <span style={S.statValue}>{solvedGens}/{sourceGens}</span>
               </span>
-              <span>·</span>
               <span>
-                gen <span style={S.statValue}>{solvedGens}</span> of <span style={S.statValue}>{totalGens}</span>
+                time <span style={S.statValue}>{formatDuration(elapsedMs)}</span>
               </span>
+              {throughputKbps > 0 && (
+                <span>
+                  speed <span style={S.statValue}>{throughputKbps.toFixed(1)} KB/s</span>
+                </span>
+              )}
               <span>·</span>
               <span>{status || 'Working…'}</span>
             </div>
@@ -553,7 +604,7 @@ export function ReceiverPage() {
         </div>
       )}
 
-      {/* ── GIF file upload ───────────────────────────────────────────────── */}
+      {/* ── GIF file upload ────────────────────────────────────────────────────────────── */}
       {inputMode === 'gif-file' && (
         <div style={S.section}>
           <div style={S.label}>Upload GIF</div>
@@ -570,21 +621,27 @@ export function ReceiverPage() {
                 useful <span style={S.statValue}>{acceptedPackets}</span>
               </span>
               <span>
-                need <span style={S.statValue}>{neededPackets}</span>
+                gens <span style={S.statValue}>{solvedGens}/{sourceGens}</span>
               </span>
-              <span>·</span>
               <span>
-                gen <span style={S.statValue}>{solvedGens}</span> of <span style={S.statValue}>{totalGens}</span>
+                time <span style={S.statValue}>{formatDuration(elapsedMs)}</span>
               </span>
+              {throughputKbps > 0 && (
+                <span>
+                  speed <span style={S.statValue}>{throughputKbps.toFixed(1)} KB/s</span>
+                </span>
+              )}
+              <span>·</span>
+              <span>{status || 'Working…'}</span>
             </div>
           )}
           {error && <div style={{ ...S.warn, marginTop: 8 }}>⚠ {error}</div>}
         </div>
       )}
 
-      {/* ── Received text ───────────────────────────────────────────────────── */}
+      {/* ── Received text ────────────────────────────────────────────────────────────────── */}
       {receivedText && (
-        <div style={S.section}>
+        <div style={S.section} ref={textResultRef}>
           <div style={S.label}>Recovered Text</div>
           <textarea
             style={S.textarea}
@@ -594,9 +651,9 @@ export function ReceiverPage() {
         </div>
       )}
 
-      {/* ── Download recovered file ───────────────────────────────────────────── */}
+      {/* ── Download recovered file ────────────────────────────────────────────────── */}
       {receivedFile && (
-        <div style={S.section}>
+        <div style={S.section} ref={fileResultRef}>
           <div style={S.label}>Recovered File</div>
           <p style={{ margin: '6px 0', fontSize: 14 }}>
             <strong>File:</strong> {receivedFile.filename || '(unnamed)'} &middot;{' '}
@@ -604,7 +661,7 @@ export function ReceiverPage() {
             {receivedFile.mime}
           </p>
           <button style={S.btn} onClick={handleDownload}>
-            ⬇ Download Recovered File
+            ⸗ Download Recovered File
           </button>
         </div>
       )}
@@ -612,10 +669,19 @@ export function ReceiverPage() {
   );
 }
 
-// ─── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────────────────────
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const remS = s % 60;
+  if (m > 0) return `${m}m${remS.toString().padStart(2, '0')}s`;
+  return `${s}s`;
 }
