@@ -80,6 +80,15 @@ export function hideCursor(): void {
 }
 
 /**
+ * Move cursor up n lines (stays in column 0 if already there).
+ */
+export function moveCursorUp(n: number): void {
+  if (n > 0) {
+    process.stdout.write(`\x1b[${n}A`);
+  }
+}
+
+/**
  * Show the terminal cursor.
  */
 export function showCursor(): void {

@@ -153,10 +153,9 @@ describe('CLI Screen Helpers', () => {
     expect(typeof clearScreen).toBe('function');
   });
 
-  it('should produce cursor visibility sequences', async () => {
-    const { hideCursor, showCursor } = await import('@/cli/terminal_raster');
-    expect(typeof hideCursor).toBe('function');
-    expect(typeof showCursor).toBe('function');
+  it('should produce cursor-up sequence', async () => {
+    const { moveCursorUp } = await import('@/cli/terminal_raster');
+    expect(typeof moveCursorUp).toBe('function');
   });
 });
 

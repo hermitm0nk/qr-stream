@@ -19,14 +19,13 @@ import { generateQRMatrix } from '../core/qr/qr_encode';
 import { packetize } from '../core/sender/packetizer';
 import { scheduleFrames } from '../core/sender/scheduler';
 import { QR_VERSION, ECC_LEVEL } from '../core/protocol/constants';
-import { parseHeader } from '../core/protocol/packet';
-import { clearScreen, hideCursor, showCursor, renderToTerminal } from './terminal_raster';
+import { clearScreen, hideCursor, showCursor, renderToTerminal, moveCursorUp } from './terminal_raster';
 
 const FPS_MS = 100;
 
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────
 // Argument parsing
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────
 
 function readInput(): Uint8Array {
   const args = process.argv.slice(2);
@@ -49,30 +48,18 @@ function readInput(): Uint8Array {
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────
 // Encode pipeline (reuse webapp protocol)
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────
 
-function buildFrames(data: Uint8Array): { packets: Uint8Array[]; genIndices: number[]; meta: { isText: boolean; isCompressed: boolean; totalGenerations: number; dataLength: number } } {
+function buildFrames(data: Uint8Array): Uint8Array[] {
   const result = packetize(data, false, true);
-  const ordered = scheduleFrames(result.packets, result.totalGenerations);
-  const genIndices = ordered.map((pkt) => parseHeader(pkt).generationIndex);
-
-  return {
-    packets: ordered,
-    genIndices,
-    meta: {
-      isText: result.isText,
-      isCompressed: result.isCompressed,
-      totalGenerations: result.totalGenerations,
-      dataLength: result.dataLength,
-    },
-  };
+  return scheduleFrames(result.packets, result.totalGenerations);
 }
 
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────
 // Main loop
-// ────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────────
 
 function main() {
   let data: Uint8Array;
@@ -88,7 +75,7 @@ function main() {
     process.exit(1);
   }
 
-  const { packets, genIndices, meta } = buildFrames(data);
+  const packets = buildFrames(data);
 
   // Pre-render all QR matrices to terminal strings
   const frames: string[][] = [];
@@ -102,38 +89,39 @@ function main() {
   const qrWidth = frames[0]?.[0]?.length ?? 0;
   const qrHeight = frames[0]?.length ?? 0;
   const padLeft = Math.max(0, Math.floor((termWidth - qrWidth) / 2));
-  const padTop = Math.max(0, Math.floor((termHeight - qrHeight - 4) / 2));
+  const padTop = Math.max(0, Math.floor((termHeight - qrHeight) / 2));
 
   let running = true;
   let frameIdx = 0;
+  let firstDraw = true;
 
   function draw() {
     if (!running) return;
 
+    const frame = frames[frameIdx]!;
     const lines: string[] = [];
 
-    // Top padding
-    for (let i = 0; i < padTop; i++) {
-      lines.push('');
+    if (firstDraw) {
+      // Top vertical padding (only on first draw)
+      for (let i = 0; i < padTop; i++) {
+        lines.push('');
+      }
     }
 
-    // QR frame, centered
-    for (const row of frames[frameIdx]!) {
+    // QR frame, horizontally centred
+    for (const row of frame) {
       lines.push(' '.repeat(padLeft) + row);
     }
 
-    // Status lines
-    lines.push('');
-    lines.push(
-      ' '.repeat(padLeft) +
-        `Frame ${frameIdx + 1}/${frames.length}  |  Gen ${genIndices[frameIdx]! + 1}/${meta.totalGenerations}  |  ` +
-        `${meta.isText ? 'text' : 'binary'} ${meta.isCompressed ? '(compressed)' : ''}`,
-    );
-    lines.push(' '.repeat(padLeft) + `Press q or Ctrl-C to quit`);
+    if (firstDraw) {
+      clearScreen();
+      firstDraw = false;
+    } else {
+      // Move cursor back to the first QR line so we overwrite in-place
+      moveCursorUp(qrHeight);
+    }
 
-    clearScreen();
     process.stdout.write(lines.join('\n'));
-
     frameIdx = (frameIdx + 1) % frames.length;
   }
 
