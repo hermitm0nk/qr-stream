@@ -29,7 +29,7 @@ interface SessionState {
   manifest: ManifestData | null;
   manifestFragments: Uint8Array[];
   decoder: GenerationDecoder | null;
-  dedup: Set<string>;           // dedup key = sessionId:genIdx:symbolIdx
+  dedup: Set<string>;
   receivedPackets: number;
   solvedGenerations: Set<number>;
   stats: {
@@ -37,13 +37,12 @@ interface SessionState {
     framesWithQR: number;
   };
   profile: ProfileConfig | null;
+  /** Set to true once reconstruction is done so late frames are ignored. */
+  completed: boolean;
 }
 
 // Worker-global state (keyed by sessionId.toString())
 const sessions = new Map<string, SessionState>();
-
-// Debug counter for tracking frame processing
-let totalFramesReceived = 0;
 
 // ─── Worker handler ──────────────────────────────────────────────────────────
 
@@ -56,23 +55,23 @@ self.onmessage = (e: MessageEvent) => {
   }
 
   if (msg.type === 'frame') {
-    totalFramesReceived++;
-    if (totalFramesReceived % 5 === 0) {
-      self.postMessage({ type: 'error', message: `Worker received ${totalFramesReceived} frames total` });
-    }
     let imageData: ImageData | null = msg.imageData ?? msg.frameData ?? null;
     if (!imageData && msg.pixels && msg.width && msg.height) {
-      imageData = new ImageData(
-        new Uint8ClampedArray(msg.pixels),
-        msg.width,
-        msg.height,
-      );
+      try {
+        imageData = new ImageData(
+          new Uint8ClampedArray(msg.pixels),
+          msg.width,
+          msg.height,
+        );
+      } catch (e: any) {
+        self.postMessage({ type: 'error', message: 'ImageData failed: ' + e.message });
+        return;
+      }
     }
     if (!imageData) return;
     try {
       handleFrame(imageData!);
     } catch (err: any) {
-      // Don't crash worker on decode errors
       self.postMessage({ type: 'error', message: `Frame error: ${err.message ?? String(err)}` });
     }
     return;
@@ -84,10 +83,7 @@ self.onmessage = (e: MessageEvent) => {
 function handleFrame(imageData: ImageData): void {
   // 1. Decode QR code from image
   const decoded = decodeQRFromCanvas(imageData);
-  if (!decoded) {
-    self.postMessage({ type: 'error', message: 'QR decode returned null for frame' });
-    return; // No QR code found in this frame
-  }
+  if (!decoded) return; // No QR code found in this frame
 
   // 2. Decoded is already Uint8Array (raw bytes from jsQR chunks)
   const bytes = decoded;
@@ -116,13 +112,19 @@ function handleFrame(imageData: ImageData): void {
       solvedGenerations: new Set(),
       stats: { framesDecoded: 0, framesWithQR: 0 },
       profile: null,
+      completed: false,
     };
     sessions.set(sessionKey, state);
   }
+
+  // If this session is already reconstructed, ignore late frames
+  if (state.completed) return;
+
   state.stats.framesDecoded++;
 
-  // 5. Dedup: skip already-seen (sessionId:generationIndex:symbolIndex)
-  const dedupKey = `${sessionKey}:${h.generationIndex}:${h.symbolIndex}`;
+  // 5. Dedup: skip already-seen (sessionId:generationIndex:packetType:symbolIndex)
+  // Include packetType so manifest fragments don't collide with data symbols.
+  const dedupKey = `${sessionKey}:${h.generationIndex}:${h.packetType}:${h.symbolIndex}`;
   if (state.dedup.has(dedupKey)) return;
   state.dedup.add(dedupKey);
   state.stats.framesWithQR++;
@@ -136,6 +138,9 @@ function handleFrame(imageData: ImageData): void {
   ) {
     handleDataPacket(state, packet);
   }
+
+  // If reconstruction just completed, don't send a trailing progress message
+  if (state.completed) return;
 
   // 7. Report progress back to main thread
   reportProgress(state);
@@ -275,8 +280,8 @@ function reconstructData(state: SessionState): void {
     { transfer: [finalData.buffer as ArrayBuffer] },
   );
 
-  // Clean up session
-  sessions.delete(state.sessionKey);
+  // Mark session completed so late frames are silently ignored
+  state.completed = true;
 }
 
 // ─── Progress reporting ──────────────────────────────────────────────────────

@@ -88,6 +88,14 @@ describe('GIF roundtrip', () => {
       gens.set(g, gd.getSourceSymbols(g)!);
     }
     const payload = assemblePayload(gens, manifest.totalGenerations, manifest.lastGenRealSize);
-    expect(payload.slice(0, data.length)).toEqual(data);
+
+    // Decompress if needed
+    let finalPayload = payload;
+    if (manifest.compressionCodec === 'deflate-raw') {
+      const { inflateSync } = await import('fflate');
+      finalPayload = inflateSync(payload);
+    }
+
+    expect(finalPayload.slice(0, data.length)).toEqual(data);
   });
 });
