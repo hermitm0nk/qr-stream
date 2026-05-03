@@ -8,7 +8,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "cli": "bun run src/cli/qr-terminal.ts",
+    "cli:file": "bun run src/cli/qr-terminal.ts",
+    "build:cli": "esbuild src/cli/qr-terminal.ts --bundle --platform=node --target=node18 --outfile=dist/qr-terminal.js --format=esm --external:node:*"
   },
   "devDependencies": {
     "@preact/preset-vite": "2",
