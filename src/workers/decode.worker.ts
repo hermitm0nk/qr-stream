@@ -26,8 +26,9 @@ interface SessionState {
   isCompressed: boolean;
   completed: boolean;
   stats: {
-    framesDecoded: number;
-    framesWithQR: number;
+    totalFrames: number;      // every frame received by worker
+    framesWithQR: number;     // frames where QR was found
+    acceptedPackets: number;  // linearly independent symbols accepted
   };
 }
 
@@ -71,8 +72,19 @@ self.onmessage = (e: MessageEvent) => {
 // ─── Frame handling ──────────────────────────────────────────────────────────
 
 function handleFrame(imageData: ImageData): void {
-  const decoded = decodeQRFromCanvas(imageData);
-  if (!decoded) return;
+  let state: SessionState | undefined;
+
+  const decoded = decodeQRFromCanvas(imageData, { inversionAttempts: 'attemptBoth' });
+
+  // If we already have a session, count this frame
+  // (we don't know sessionId until we parse, so we defer counting)
+  // Instead: count total frames per-session after first packet seen
+
+  if (!decoded) {
+    // We can't count this frame against any session since we don't know the sessionId.
+    // For camera mode this is fine — frames without QR are not attributed.
+    return;
+  }
 
   const bytes = decoded;
 
@@ -84,14 +96,14 @@ function handleFrame(imageData: ImageData): void {
   }
 
   const h = packet.header;
-  const sid = h.sessionId;
+  const sessionId = h.sessionId;
 
   // Get or create session state
-  let state = sessions.get(sid);
+  state = sessions.get(sessionId);
   if (!state) {
     state = {
-      sessionId: sid,
-      decoder: new GenerationDecoder(K, MAX_PAYLOAD_SIZE, sid, 0),
+      sessionId,
+      decoder: new GenerationDecoder(K, MAX_PAYLOAD_SIZE, sessionId, 0),
       dedup: new Set(),
       receivedPackets: 0,
       solvedGenerations: new Set(),
@@ -100,23 +112,23 @@ function handleFrame(imageData: ImageData): void {
       isText: (h.flags & 1) !== 0,
       isCompressed: (h.flags & 2) !== 0,
       completed: false,
-      stats: { framesDecoded: 0, framesWithQR: 0 },
+      stats: { totalFrames: 0, framesWithQR: 0, acceptedPackets: 0 },
     };
-    sessions.set(sid, state);
+    sessions.set(sessionId, state);
   }
 
   if (state.completed) return;
 
-  // Update metadata from header (in case first packet was incomplete)
+  // Update metadata from header
   state.totalGenerations = h.totalGenerations;
   state.dataLength = h.dataLength;
   state.isText = (h.flags & 1) !== 0;
   state.isCompressed = (h.flags & 2) !== 0;
 
-  state.stats.framesDecoded++;
+  state.stats.totalFrames++;
 
   // Dedup: sessionId:generationIndex:packetType:symbolIndex
-  const dedupKey = `${sid}:${h.generationIndex}:${h.packetType}:${h.symbolIndex}`;
+  const dedupKey = `${sessionId}:${h.generationIndex}:${h.packetType}:${h.symbolIndex}`;
   if (state.dedup.has(dedupKey)) return;
   state.dedup.add(dedupKey);
   state.stats.framesWithQR++;
@@ -132,6 +144,7 @@ function handleFrame(imageData: ImageData): void {
   }
 
   if (accepted) {
+    state.stats.acceptedPackets++;
     state.receivedPackets++;
 
     if (state.decoder.isSolved(gen)) {
@@ -227,12 +240,15 @@ function reconstructData(state: SessionState): void {
 function reportProgress(state: SessionState): void {
   const totalGens = state.totalGenerations;
   const solvedGens = state.solvedGenerations.size;
+  const needed = totalGens > 0 ? K * totalGens : 0;
 
   self.postMessage({
     type: 'progress',
     sessionId: state.sessionId,
-    framesDecoded: state.stats.framesDecoded,
+    totalFrames: state.stats.totalFrames,
     framesWithQR: state.stats.framesWithQR,
+    acceptedPackets: state.stats.acceptedPackets,
+    neededPackets: needed,
     receivedPackets: state.receivedPackets,
     solvedGenerations: solvedGens,
     totalGenerations: totalGens,

@@ -177,6 +177,7 @@ const S = {
 export function ReceiverPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
   const workerRef = useRef<Worker | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animRef = useRef<number>(0);
@@ -186,13 +187,18 @@ export function ReceiverPage() {
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState('');
   const [progress, setProgress] = useState(0);
-  const [framesDecoded, setFramesDecoded] = useState(0);
+  const [totalFrames, setTotalFrames] = useState(0);
+  const [framesWithQR, setFramesWithQR] = useState(0);
+  const [acceptedPackets, setAcceptedPackets] = useState(0);
+  const [neededPackets, setNeededPackets] = useState(0);
   const [solvedGens, setSolvedGens] = useState(0);
   const [totalGens, setTotalGens] = useState(0);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
   const [receivedText, setReceivedText] = useState('');
   const [error, setError] = useState('');
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [hasZoomSupport, setHasZoomSupport] = useState(false);
 
   // ── Create decode worker ───────────────────────────────────────────────
   function createWorker(): Worker {
@@ -205,7 +211,10 @@ export function ReceiverPage() {
       const msg = e.data;
       switch (msg.type) {
         case 'progress': {
-          setFramesDecoded(msg.framesDecoded);
+          setTotalFrames(msg.totalFrames ?? 0);
+          setFramesWithQR(msg.framesWithQR ?? 0);
+          setAcceptedPackets(msg.acceptedPackets ?? 0);
+          setNeededPackets(msg.neededPackets ?? 0);
           setSolvedGens(msg.solvedGenerations);
           setTotalGens(msg.totalGenerations);
           setProgress(msg.totalGenerations > 0 ? msg.solvedGenerations / msg.totalGenerations : 0);
@@ -223,7 +232,7 @@ export function ReceiverPage() {
                         progress: msg.totalGenerations > 0 ? msg.solvedGenerations / msg.totalGenerations : 0,
                         solvedGenerations: msg.solvedGenerations,
                         totalGenerations: msg.totalGenerations,
-                        framesDecoded: msg.framesDecoded,
+                        framesDecoded: msg.totalFrames ?? 0,
                         status: 'receiving' as const,
                       }
                     : s,
@@ -284,6 +293,27 @@ export function ReceiverPage() {
     return w;
   }
 
+  // ── Try to set camera zoom via getUserMedia constraints ──────────────
+  const applyCameraZoom = useCallback(async (level: number) => {
+    const stream = streamRef.current;
+    if (!stream) return;
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+
+    const capabilities = track.getCapabilities() as any;
+    if (capabilities?.zoom) {
+      try {
+        await track.applyConstraints({
+          advanced: [{ zoom: level }],
+        } as any);
+        setZoomLevel(level);
+        setHasZoomSupport(true);
+      } catch (e: any) {
+        console.warn('Camera zoom failed:', e.message);
+      }
+    }
+  }, []);
+
   // ── Start camera scanning ────────────────────────────────────────────
   const startCameraScanning = useCallback(async () => {
     setError('');
@@ -291,7 +321,10 @@ export function ReceiverPage() {
     setReceivedText('');
     setSessions([]);
     setProgress(0);
-    setFramesDecoded(0);
+    setTotalFrames(0);
+    setFramesWithQR(0);
+    setAcceptedPackets(0);
+    setNeededPackets(0);
     setSolvedGens(0);
     setTotalGens(0);
 
@@ -301,6 +334,27 @@ export function ReceiverPage() {
         audio: false,
       });
       streamRef.current = stream;
+
+      // Check zoom capabilities
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        const capabilities = track.getCapabilities() as any;
+        if (capabilities?.zoom) {
+          setHasZoomSupport(true);
+          // Apply an initial modest zoom if supported
+          const idealZoom = Math.min(2, capabilities.zoom.max ?? 2);
+          try {
+            await track.applyConstraints({ advanced: [{ zoom: idealZoom }] } as any);
+            setZoomLevel(idealZoom);
+          } catch {
+            // ignore
+          }
+        } else {
+          setHasZoomSupport(false);
+          setZoomLevel(1);
+        }
+      }
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -340,7 +394,10 @@ export function ReceiverPage() {
     setReceivedText('');
     setSessions([]);
     setProgress(0);
-    setFramesDecoded(0);
+    setTotalFrames(0);
+    setFramesWithQR(0);
+    setAcceptedPackets(0);
+    setNeededPackets(0);
     setSolvedGens(0);
     setTotalGens(0);
 
@@ -401,9 +458,11 @@ export function ReceiverPage() {
       workerRef.current = null;
     }
     setStatus('Stopped');
+    setHasZoomSupport(false);
+    setZoomLevel(1);
   }, []);
 
-  // ── Capture frame from camera (with 3× digital zoom crop) ────────────────
+  // ── Capture frame from camera (software crop + optional camera zoom) ───
   const captureFrame = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -413,25 +472,37 @@ export function ReceiverPage() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const cw = Math.min(video.videoWidth || 640, 640);
-    const ch = Math.min(video.videoHeight || 640, 640);
+    const vw = video.videoWidth || 640;
+    const vh = video.videoHeight || 640;
+
+    // Output canvas size: cap at 640 for performance, but preserve aspect ratio
+    const maxCanvas = 640;
+    const aspect = vw / vh;
+    let cw: number, ch: number;
+    if (aspect >= 1) {
+      cw = Math.min(vw, maxCanvas);
+      ch = Math.round(cw / aspect);
+    } else {
+      ch = Math.min(vh, maxCanvas);
+      cw = Math.round(ch * aspect);
+    }
     canvas.width = cw;
     canvas.height = ch;
 
-    const vw = video.videoWidth || 640;
-    const vh = video.videoHeight || 640;
-    const minDim = Math.min(vw, vh);
+    // Crop region: center 50% of the frame (2× software zoom)
+    // If camera zoom is active, the video already shows a zoomed view,
+    // so we crop less aggressively.
+    const cropRatio = zoomLevel > 1 ? 0.6 : 0.5;
+    const cropW = vw * cropRatio;
+    const cropH = vh * cropRatio;
+    const sx = (vw - cropW) / 2;
+    const sy = (vh - cropH) / 2;
 
-    // 3× digital zoom: crop center 1/3 of the frame
-    const cropSize = minDim / 3;
-    const sx = (vw - cropSize) / 2;
-    const sy = (vh - cropSize) / 2;
-
-    ctx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, cw, ch);
+    ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cw, ch);
     const imageData = ctx.getImageData(0, 0, cw, ch);
 
     worker.postMessage({ type: 'frame', imageData });
-  }, []);
+  }, [zoomLevel]);
 
   // ── Download recovered file ─────────────────────────────────────────────
   const handleDownload = useCallback(() => {
@@ -486,7 +557,31 @@ export function ReceiverPage() {
       {inputMode === 'camera' && (
         <div style={S.section}>
           <div style={S.label}>Camera</div>
-          <video ref={videoRef} style={S.video} playsInline muted />
+          <div
+            ref={videoContainerRef}
+            style={{ position: 'relative', display: 'inline-block', maxWidth: 480, width: '100%' }}
+          >
+            <video ref={videoRef} style={{ width: '100%', borderRadius: 6, background: '#000', display: 'block' }} playsInline muted />
+            {/* Scan-region overlay */}
+            <div
+              style={{
+                position: 'absolute',
+                top: '25%',
+                left: '25%',
+                width: '50%',
+                height: '50%',
+                border: '2px dashed rgba(88, 166, 255, 0.7)',
+                borderRadius: 8,
+                pointerEvents: 'none',
+                boxShadow: '0 0 0 9999px rgba(0,0,0,0.35)',
+              }}
+            />
+            {/* Corner markers */}
+            <div style={{ position: 'absolute', top: '25%', left: '25%', width: 16, height: 16, borderTop: '3px solid #58a6ff', borderLeft: '3px solid #58a6ff', pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', top: '25%', right: '25%', width: 16, height: 16, borderTop: '3px solid #58a6ff', borderRight: '3px solid #58a6ff', pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', bottom: '25%', left: '25%', width: 16, height: 16, borderBottom: '3px solid #58a6ff', borderLeft: '3px solid #58a6ff', pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', bottom: '25%', right: '25%', width: 16, height: 16, borderBottom: '3px solid #58a6ff', borderRight: '3px solid #58a6ff', pointerEvents: 'none' }} />
+          </div>
           <canvas ref={canvasRef} style={{ display: 'none' }} />
           <div style={{ ...S.row, marginTop: 10 }}>
             {!scanning ? (
@@ -498,9 +593,26 @@ export function ReceiverPage() {
                 ■ Stop Scan
               </button>
             )}
+            {hasZoomSupport && scanning && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: '#8b949e' }}>Zoom:</span>
+                <input
+                  type="range"
+                  min={1}
+                  max={3}
+                  step={0.5}
+                  value={zoomLevel}
+                  onChange={(e) => applyCameraZoom(Number((e.target as HTMLInputElement).value))}
+                  style={{ width: 120 }}
+                />
+                <span style={{ fontSize: 12, color: '#c9d1d9', minWidth: 30 }}>{zoomLevel}×</span>
+              </div>
+            )}
           </div>
           <p style={{ fontSize: 12, color: '#8b949e', marginTop: 6 }}>
-            3× digital zoom is applied automatically to the center of the frame.
+            {hasZoomSupport
+              ? 'Camera zoom is active. The dashed square shows the scan region.'
+              : 'Software crop is applied to the center 50% of the frame (dashed square).'}
           </p>
           {error && <div style={S.warn}>⚠ {error}</div>}
         </div>
@@ -526,9 +638,6 @@ export function ReceiverPage() {
             <strong>Status:</strong> {status || 'Idle'}
           </span>
           <span>
-            <strong>Frames:</strong> {framesDecoded}
-          </span>
-          <span>
             <strong>Generations:</strong> {solvedGens}/{totalGens}
           </span>
         </div>
@@ -544,6 +653,32 @@ export function ReceiverPage() {
           </div>
         )}
       </div>
+
+      {/* ── Frame statistics ───────────────────────────────────────────────── */}
+      {scanning && (
+        <div style={S.section}>
+          <div style={S.label}>Frame Statistics</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+            <div style={{ textAlign: 'center', padding: '10px 0', background: '#0d1117', borderRadius: 6 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: '#58a6ff' }}>{totalFrames}</div>
+              <div style={{ fontSize: 11, color: '#8b949e', marginTop: 2 }}>Scanned</div>
+            </div>
+            <div style={{ textAlign: 'center', padding: '10px 0', background: '#0d1117', borderRadius: 6 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: '#3fb950' }}>{acceptedPackets}</div>
+              <div style={{ fontSize: 11, color: '#8b949e', marginTop: 2 }}>Useful (linearly independent)</div>
+            </div>
+            <div style={{ textAlign: 'center', padding: '10px 0', background: '#0d1117', borderRadius: 6 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: '#d29922' }}>{neededPackets}</div>
+              <div style={{ fontSize: 11, color: '#8b949e', marginTop: 2 }}>Minimal needed</div>
+            </div>
+          </div>
+          <p style={{ fontSize: 11, color: '#8b949e', marginTop: 8 }}>
+            <strong>Scanned</strong> = total frames with valid QR codes seen.&nbsp;
+            <strong>Useful</strong> = linearly independent symbols accepted by the decoder.&nbsp;
+            <strong>Minimal needed</strong> = K × totalGenerations ({16} symbols per generation).
+          </p>
+        </div>
+      )}
 
       {/* ── Sessions table ─────────────────────────────────────────────────────── */}
       {sessions.length > 0 && (

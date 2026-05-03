@@ -51,14 +51,18 @@ function extractBytes(result: { chunks?: Array<{ bytes?: number[]; text?: string
  * the QR decode process. Returns null if no QR code is found.
  *
  * @param imageData  RGBA pixel data from a canvas (width × height × 4 bytes)
+ * @param opts       Optional jsQR options (e.g. inversionAttempts)
  * @returns The decoded raw bytes, or `null` if no QR code could be found/decoded.
  */
-export function decodeQRFromCanvas(imageData: ImageData): Uint8Array | null {
+export function decodeQRFromCanvas(
+  imageData: ImageData,
+  opts?: { inversionAttempts?: 'attemptBoth' | 'dontInvert' | 'onlyInvert' | 'invertFirst' },
+): Uint8Array | null {
   const result = jsQR(
     imageData.data,
     imageData.width,
     imageData.height,
-    { inversionAttempts: 'attemptBoth' },
+    { inversionAttempts: opts?.inversionAttempts ?? 'attemptBoth' },
   );
   if (!result) return null;
   return extractBytes(result);
