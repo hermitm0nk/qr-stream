@@ -3,6 +3,9 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "qr-terminal": "dist/qr-terminal.js"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build && npm run build:cli",

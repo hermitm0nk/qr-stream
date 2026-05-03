@@ -94,12 +94,13 @@ export function hideCursor(): void {
 }
 
 /**
- * Move cursor up n lines (stays in column 0 if already there).
+ * Move cursor up n lines and to column 0.
  */
 export function moveCursorUp(n: number): void {
   if (n > 0) {
     process.stdout.write(`\x1b[${n}A`);
   }
+  process.stdout.write('\x1b[G');
 }
 
 /**

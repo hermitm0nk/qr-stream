@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * QR Terminal Display
  *
@@ -8,9 +8,10 @@
  * interrupted.
  *
  * Usage:
- *   bun run src/cli/qr-terminal.ts                    # read from stdin
- *   bun run src/cli/qr-terminal.ts /path/to/file.txt  # read from file
- *   node --import=tsx src/cli/qr-terminal.ts ...      # with tsx
+ *   qr-terminal [file]              # read from file
+ *   echo "text" | qr-terminal       # read from stdin
+ *   npx qr-terminal [file]          # via npx
+ *   bunx qr-terminal [file]         # via bunx
  */
 
 import { readFileSync, existsSync, openSync, closeSync } from 'fs';
@@ -39,8 +40,10 @@ const HELP_TEXT = `
 QR Terminal Display – encode text or a file into a looping QR-code sequence.
 
 Usage:
-  qr-terminal [file]           read from file
-  echo "text" | qr-terminal    read from stdin
+  qr-terminal [file]              read from file
+  echo "text" | qr-terminal       read from stdin
+  npx qr-terminal [file]          via npx
+  bunx qr-terminal [file]         via bunx
 
 Controls:
   q, Q         quit
@@ -120,12 +123,7 @@ function main() {
     frames.push(renderToTerminal(matrix));
   }
 
-  const termWidth = process.stdout.columns ?? 80;
-  const termHeight = process.stdout.rows ?? 24;
-  const qrWidth = frames[0]?.[0]?.length ?? 0;
   const qrHeight = frames[0]?.length ?? 0;
-  const padLeft = Math.max(0, Math.floor((termWidth - qrWidth) / 2));
-  const padTop = Math.max(0, Math.floor((termHeight - qrHeight) / 2));
 
   let running = true;
   let frameIdx = 0;
@@ -135,19 +133,6 @@ function main() {
     if (!running) return;
 
     const frame = frames[frameIdx]!;
-    const lines: string[] = [];
-
-    if (firstDraw) {
-      // Top vertical padding (only on first draw)
-      for (let i = 0; i < padTop; i++) {
-        lines.push('');
-      }
-    }
-
-    // QR frame, horizontally centred
-    for (const row of frame) {
-      lines.push(' '.repeat(padLeft) + row);
-    }
 
     if (firstDraw) {
       firstDraw = false;
@@ -156,7 +141,9 @@ function main() {
       moveCursorUp(qrHeight);
     }
 
-    process.stdout.write(lines.join('\n'));
+    // Write frame lines followed by a newline so the cursor lands at
+    // column 0 of the next line, ready for the next moveCursorUp.
+    process.stdout.write(frame.join('\n') + '\n');
     frameIdx = (frameIdx + 1) % frames.length;
   }
 
