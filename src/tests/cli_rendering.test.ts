@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 
 describe('Terminal Rasterizer', () => {
-  it('should render a simple 2×2 matrix', async () => {
+  it('should render a simple 2×2 matrix with default quiet zone', async () => {
     const { renderToTerminal } = await import('@/cli/terminal_raster');
 
     // 2×2 matrix: all dark
@@ -18,13 +18,17 @@ describe('Terminal Rasterizer', () => {
     ];
 
     const lines = renderToTerminal(matrix);
-    // 2 rows → 1 terminal line (two QR rows per terminal row)
-    expect(lines.length).toBe(1);
-    // both QR rows dark → ██
-    expect(lines[0]).toBe('\u2588\u2588');
+    // default quietZone = 4
+    // padRows = ceil(4/2) = 2, totalWidth = 2 + 8 = 10
+    expect(lines.length).toBe(5); // 2 top + 1 QR + 2 bottom
+    expect(lines[0]).toBe(' '.repeat(10));
+    expect(lines[1]).toBe(' '.repeat(10));
+    expect(lines[2]).toBe('    \u2588\u2588    '); // 4 spaces + ██ + 4 spaces
+    expect(lines[3]).toBe(' '.repeat(10));
+    expect(lines[4]).toBe(' '.repeat(10));
   });
 
-  it('should render mixed 4×4 matrix', async () => {
+  it('should render mixed 4×4 matrix with default quiet zone', async () => {
     const { renderToTerminal } = await import('@/cli/terminal_raster');
 
     const matrix = [
@@ -35,27 +39,31 @@ describe('Terminal Rasterizer', () => {
     ];
 
     const lines = renderToTerminal(matrix);
-    expect(lines.length).toBe(2); // 4 QR rows → 2 terminal rows
+    expect(lines.length).toBe(6); // 2 top + 2 QR + 2 bottom
 
-    // Row 0: top=TG, bottom=FB for each column
+    // First QR line starts after 2 top rows (index 2)
+    const qrLine0 = lines[2]!;
+    expect(qrLine0.length).toBe(12); // 4 + 4 + 4
+
     // Col 0: top=true, bottom=false → ▀ (U+2580)
-    expect(lines[0]![0]).toBe('\u2580');
+    expect(qrLine0[4]).toBe('\u2580');
     // Col 1: top=false, bottom=true → ▄ (U+2584)
-    expect(lines[0]![1]).toBe('\u2584');
+    expect(qrLine0[5]).toBe('\u2584');
     // Col 2: top=true, bottom=false → ▀
-    expect(lines[0]![2]).toBe('\u2580');
+    expect(qrLine0[6]).toBe('\u2580');
     // Col 3: top=false, bottom=true → ▄
-    expect(lines[0]![3]).toBe('\u2584');
+    expect(qrLine0[7]).toBe('\u2584');
 
-    // Row 1: top=row2[TG], bottom=row3[FB]
+    // Second QR line (index 3)
+    const qrLine1 = lines[3]!;
     // Col 0: top=true, bottom=false → ▀
-    expect(lines[1]![0]).toBe('\u2580');
+    expect(qrLine1[4]).toBe('\u2580');
     // Col 1: top=true, bottom=false → ▀
-    expect(lines[1]![1]).toBe('\u2580');
+    expect(qrLine1[5]).toBe('\u2580');
     // Col 2: top=false, bottom=true → ▄
-    expect(lines[1]![2]).toBe('\u2584');
+    expect(qrLine1[6]).toBe('\u2584');
     // Col 3: top=false, bottom=true → ▄
-    expect(lines[1]![3]).toBe('\u2584');
+    expect(qrLine1[7]).toBe('\u2584');
   });
 
   it('should handle odd number of QR rows', async () => {
@@ -69,19 +77,19 @@ describe('Terminal Rasterizer', () => {
     ];
 
     const lines = renderToTerminal(matrix);
-    expect(lines.length).toBe(2); // 3 QR rows → 2 terminal rows
+    expect(lines.length).toBe(6); // 2 top + 2 QR + 2 bottom
 
-    // Row 0: QR rows 0+1
-    expect(lines[0]!.length).toBe(3);
+    // First QR line (index 2): QR rows 0+1
+    expect(lines[2]!.length).toBe(11); // 4 + 3 + 4
 
-    // Row 1: QR row 2 + bottom=false (out of bounds)
-    expect(lines[1]!.length).toBe(3);
+    // Second QR line (index 3): QR row 2 + bottom=false (out of bounds)
+    expect(lines[3]!.length).toBe(11);
     // Col 0: top=true, bottom=false → ▀
-    expect(lines[1]![0]).toBe('\u2580');
+    expect(lines[3]![4]).toBe('\u2580');
     // Col 1: top=false, bottom=false → ' '
-    expect(lines[1]![1]).toBe(' ');
+    expect(lines[3]![5]).toBe(' ');
     // Col 2: top=true, bottom=false → ▀
-    expect(lines[1]![2]).toBe('\u2580');
+    expect(lines[3]![6]).toBe('\u2580');
   });
 
   it('should render an all-white matrix', async () => {
@@ -93,8 +101,8 @@ describe('Terminal Rasterizer', () => {
     ];
 
     const lines = renderToTerminal(matrix);
-    expect(lines.length).toBe(1);
-    expect(lines[0]).toBe('  '); // space + space
+    expect(lines.length).toBe(5);
+    expect(lines[2]).toBe(' '.repeat(10));
   });
 
   it('should render a full-block matrix', async () => {
@@ -106,8 +114,37 @@ describe('Terminal Rasterizer', () => {
     ];
 
     const lines = renderToTerminal(matrix);
+    expect(lines.length).toBe(5);
+    expect(lines[2]).toBe('    \u2588\u2588    '); // full block + full block with quiet zone
+  });
+
+  it('should support custom quiet zone size', async () => {
+    const { renderToTerminal } = await import('@/cli/terminal_raster');
+
+    const matrix = [
+      [true, true],
+      [true, true],
+    ];
+
+    const lines = renderToTerminal(matrix, 2);
+    // quietZone=2, padRows=ceil(2/2)=1, totalWidth=2+4=6
+    expect(lines.length).toBe(3); // 1 top + 1 QR + 1 bottom
+    expect(lines[0]).toBe(' '.repeat(6));
+    expect(lines[1]).toBe('  \u2588\u2588  '); // 2 spaces + ██ + 2 spaces
+    expect(lines[2]).toBe(' '.repeat(6));
+  });
+
+  it('should support zero quiet zone', async () => {
+    const { renderToTerminal } = await import('@/cli/terminal_raster');
+
+    const matrix = [
+      [true, true],
+      [true, true],
+    ];
+
+    const lines = renderToTerminal(matrix, 0);
     expect(lines.length).toBe(1);
-    expect(lines[0]).toBe('\u2588\u2588'); // full block + full block
+    expect(lines[0]).toBe('\u2588\u2588');
   });
 });
 

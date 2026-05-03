@@ -13,7 +13,8 @@
  *   node --import=tsx src/cli/qr-terminal.ts ...      # with tsx
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, openSync, closeSync } from 'fs';
+import { ReadStream } from 'tty';
 import { generateQRMatrix } from '../core/qr/qr_encode';
 import { packetize } from '../core/sender/packetizer';
 import { scheduleFrames } from '../core/sender/scheduler';
@@ -141,21 +142,40 @@ function main() {
     clearInterval(interval);
     clearScreen();
     showCursor();
+    if (ttyFd !== null) {
+      try { closeSync(ttyFd); } catch {}
+    }
     process.stdout.write('QR terminal display stopped.\n');
     process.exit(0);
   }
 
-  // Keyboard handling
-  if (process.stdin.isTTY) {
-    hideCursor();
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (key: string) => {
+  // Keyboard handling — try /dev/tty first so it works even when stdin is a pipe
+  let ttyFd: number | null = null;
+  try {
+    ttyFd = openSync('/dev/tty', 'rs');
+    const stream = new ReadStream(ttyFd);
+    stream.setRawMode(true);
+    stream.setEncoding('utf8');
+    stream.on('data', (key: string) => {
       if (key === 'q' || key === 'Q' || key === '\u0003') {
         cleanup();
       }
     });
+    stream.resume();
+    hideCursor();
+  } catch {
+    ttyFd = null;
+    if (process.stdin.isTTY) {
+      hideCursor();
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (key: string) => {
+        if (key === 'q' || key === 'Q' || key === '\u0003') {
+          cleanup();
+        }
+      });
+    }
   }
 
   process.on('SIGINT', cleanup);

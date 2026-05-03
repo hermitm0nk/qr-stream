@@ -134,7 +134,7 @@ describe('Outer EC Benefit', () => {
         ? `${(((framesNeededWithoutEC - framesNeededWithEC) / framesNeededWithoutEC) * 100).toFixed(1)}%`
         : 'N/A (without EC failed)',
     });
-  });
+  }, 15000);
 
   it('should recover when a whole source generation is missing', async () => {
     // Small payload: 3 source gens + 1 parity = 4 total

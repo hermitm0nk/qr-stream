@@ -15,14 +15,22 @@ const BLOCK_EMPTY = ' ';
 /**
  * Render a QR boolean matrix to terminal lines.
  * @param matrix 2-D array where true = dark module
+ * @param quietZone number of white modules to pad on each side (default 4)
  * @returns Array of terminal strings (one per screen row)
  */
-export function renderToTerminal(matrix: boolean[][]): string[] {
+export function renderToTerminal(matrix: boolean[][], quietZone: number = 4): string[] {
   const size = matrix.length;
+  const totalWidth = size + quietZone * 2;
   const lines: string[] = [];
 
+  // Top quiet zone — each terminal row covers 2 QR modules vertically
+  const padRows = Math.ceil(quietZone / 2);
+  for (let i = 0; i < padRows; i++) {
+    lines.push(' '.repeat(totalWidth));
+  }
+
   for (let y = 0; y < size; y += 2) {
-    let line = '';
+    let line = ' '.repeat(quietZone);
     for (let x = 0; x < size; x++) {
       const top = matrix[y][x];
       const bottom = y + 1 < size ? matrix[y + 1][x] : false;
@@ -37,7 +45,13 @@ export function renderToTerminal(matrix: boolean[][]): string[] {
         line += BLOCK_EMPTY;
       }
     }
+    line += ' '.repeat(quietZone);
     lines.push(line);
+  }
+
+  // Bottom quiet zone
+  for (let i = 0; i < padRows; i++) {
+    lines.push(' '.repeat(totalWidth));
   }
 
   return lines;
