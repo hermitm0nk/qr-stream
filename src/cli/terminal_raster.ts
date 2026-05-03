@@ -5,12 +5,20 @@
  * half-block Unicode characters (U+2580 / U+2584 / U+2588 / space).
  * Each terminal row displays two QR rows, giving an approximately
  * square aspect ratio in typical monospace terminals.
+ *
+ * Explicit ANSI colours (white bg / black fg) are applied so the QR
+ * renders correctly on both light and dark terminal themes.
  */
 
 const BLOCK_FULL = '\u2588';
 const BLOCK_UPPER = '\u2580';
 const BLOCK_LOWER = '\u2584';
 const BLOCK_EMPTY = ' ';
+
+/** White background, black foreground */
+const QR_LINE_PREFIX = '\x1b[47m\x1b[30m';
+/** Reset colours */
+const QR_LINE_SUFFIX = '\x1b[0m';
 
 /**
  * Render a QR boolean matrix to terminal lines.
@@ -26,7 +34,7 @@ export function renderToTerminal(matrix: boolean[][], quietZone: number = 4): st
   // Top quiet zone — each terminal row covers 2 QR modules vertically
   const padRows = Math.ceil(quietZone / 2);
   for (let i = 0; i < padRows; i++) {
-    lines.push(' '.repeat(totalWidth));
+    lines.push(QR_LINE_PREFIX + ' '.repeat(totalWidth) + QR_LINE_SUFFIX);
   }
 
   for (let y = 0; y < size; y += 2) {
@@ -46,12 +54,12 @@ export function renderToTerminal(matrix: boolean[][], quietZone: number = 4): st
       }
     }
     line += ' '.repeat(quietZone);
-    lines.push(line);
+    lines.push(QR_LINE_PREFIX + line + QR_LINE_SUFFIX);
   }
 
   // Bottom quiet zone
   for (let i = 0; i < padRows; i++) {
-    lines.push(' '.repeat(totalWidth));
+    lines.push(QR_LINE_PREFIX + ' '.repeat(totalWidth) + QR_LINE_SUFFIX);
   }
 
   return lines;
