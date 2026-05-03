@@ -19,9 +19,39 @@ import { generateQRMatrix } from '../core/qr/qr_encode';
 import { packetize } from '../core/sender/packetizer';
 import { scheduleFrames } from '../core/sender/scheduler';
 import { QR_VERSION, ECC_LEVEL } from '../core/protocol/constants';
-import { clearScreen, hideCursor, showCursor, renderToTerminal, moveCursorUp } from './terminal_raster';
+import {
+  enterAltBuffer,
+  exitAltBuffer,
+  clearScreen,
+  hideCursor,
+  showCursor,
+  renderToTerminal,
+  moveCursorUp,
+} from './terminal_raster';
 
 const FPS_MS = 100;
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// Help text
+// ─────────────────────────────────────────────────────────────────────────────────
+
+const HELP_TEXT = `
+QR Terminal Display – encode text or a file into a looping QR-code sequence.
+
+Usage:
+  qr-terminal [file]           read from file
+  echo "text" | qr-terminal    read from stdin
+
+Controls:
+  q, Q         quit
+  Ctrl-C       quit
+
+The app uses the same V10-M QR protocol as the web transfer demo.
+`;
+
+function showHelp(): void {
+  console.log(HELP_TEXT.trim());
+}
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // Argument parsing
@@ -62,6 +92,12 @@ function buildFrames(data: Uint8Array): Uint8Array[] {
 // ─────────────────────────────────────────────────────────────────────────────────
 
 function main() {
+  const args = process.argv.slice(2);
+  if (args.includes('-h') || args.includes('--help')) {
+    showHelp();
+    process.exit(0);
+  }
+
   let data: Uint8Array;
   try {
     data = readInput();
@@ -114,7 +150,6 @@ function main() {
     }
 
     if (firstDraw) {
-      clearScreen();
       firstDraw = false;
     } else {
       // Move cursor back to the first QR line so we overwrite in-place
@@ -128,14 +163,18 @@ function main() {
   function cleanup() {
     running = false;
     clearInterval(interval);
-    clearScreen();
+    exitAltBuffer();
     showCursor();
     if (ttyFd !== null) {
       try { closeSync(ttyFd); } catch {}
     }
-    process.stdout.write('QR terminal display stopped.\n');
+    console.log('QR terminal display stopped.');
     process.exit(0);
   }
+
+  // Switch to alternate buffer and clear it before drawing
+  enterAltBuffer();
+  clearScreen();
 
   // Keyboard handling — try /dev/tty first so it works even when stdin is a pipe
   let ttyFd: number | null = null;

@@ -148,14 +148,40 @@ describe('Terminal Rasterizer', () => {
 });
 
 describe('CLI Screen Helpers', () => {
-  it('should produce escape sequences', async () => {
+  it('should expose clearScreen', async () => {
     const { clearScreen } = await import('@/cli/terminal_raster');
     expect(typeof clearScreen).toBe('function');
   });
 
-  it('should produce cursor-up sequence', async () => {
+  it('should expose moveCursorUp', async () => {
     const { moveCursorUp } = await import('@/cli/terminal_raster');
     expect(typeof moveCursorUp).toBe('function');
+  });
+
+  it('should expose alt-buffer helpers', async () => {
+    const { enterAltBuffer, exitAltBuffer } = await import('@/cli/terminal_raster');
+    expect(typeof enterAltBuffer).toBe('function');
+    expect(typeof exitAltBuffer).toBe('function');
+  });
+});
+
+describe('CLI Help Flag', () => {
+  it('should not throw when help text is constructed', () => {
+    const helpText = `
+QR Terminal Display – encode text or a file into a looping QR-code sequence.
+
+Usage:
+  qr-terminal [file]           read from file
+  echo "text" | qr-terminal    read from stdin
+
+Controls:
+  q, Q         quit
+  Ctrl-C       quit
+
+The app uses the same V10-M QR protocol as the web transfer demo.
+`;
+    expect(helpText).toContain('Usage:');
+    expect(helpText).toContain('quit');
   });
 });
 

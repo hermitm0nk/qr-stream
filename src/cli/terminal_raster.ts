@@ -66,6 +66,20 @@ export function renderToTerminal(matrix: boolean[][], quietZone: number = 4): st
 }
 
 /**
+ * Enter the alternate screen buffer (preserves normal buffer on exit).
+ */
+export function enterAltBuffer(): void {
+  process.stdout.write('\x1b[?1049h');
+}
+
+/**
+ * Exit the alternate screen buffer and restore the normal buffer.
+ */
+export function exitAltBuffer(): void {
+  process.stdout.write('\x1b[?1049l');
+}
+
+/**
  * Clear the terminal screen and move cursor to home position.
  */
 export function clearScreen(): void {
