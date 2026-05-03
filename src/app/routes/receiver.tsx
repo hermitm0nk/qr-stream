@@ -639,6 +639,28 @@ export function ReceiverPage() {
         </div>
       )}
 
+      {/* ── Persistent transfer summary (visible even after scanning stops) ── */}
+      {(elapsedMs > 0 || throughputKbps > 0) && !scanning && (
+        <div style={{ ...S.section, padding: '10px 20px', fontSize: 13, color: '#8b949e' }}>
+          Transfer complete —{' '}
+          <span style={S.statValue}>{formatDuration(elapsedMs)}</span>
+          {throughputKbps > 0 && (
+            <span>
+              {' '}·{' '}avg <span style={S.statValue}>{throughputKbps.toFixed(1)} KB/s</span>
+            </span>
+          )}
+          <span>
+            {' '}·{' '}data{' '}
+            <span style={S.statValue}>
+              {formatBytes(
+                dataLengthRef.current ||
+                (receivedFile?.data.byteLength ?? receivedText.length ?? 0)
+              )}
+            </span>
+          </span>
+        </div>
+      )}
+
       {/* ── Received text ────────────────────────────────────────────────────────────────── */}
       {receivedText && (
         <div style={S.section} ref={textResultRef}>
