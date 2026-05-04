@@ -1,5 +1,8 @@
 {
-  "name": "qr-stream",
+  "name": "@hermitm0nk/qr-stream",
+  "publishConfig": {
+    "access": "public"
+  },
   "version": "0.8.4",
   "description": "Transfer files and text via animated QR codes - CLI and web app",
   "type": "module",
