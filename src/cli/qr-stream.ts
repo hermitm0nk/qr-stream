@@ -63,7 +63,7 @@ function showHelp(): void {
 // Argument parsing
 // ─────────────────────────────────────────────────────────────────────────────────
 
-function readInput(): Uint8Array {
+function readInput(): { data: Uint8Array; isText: boolean } {
   const args = process.argv.slice(2);
 
   if (args.length > 0) {
@@ -72,12 +72,13 @@ function readInput(): Uint8Array {
       console.error(`Error: file not found: ${filePath}`);
       process.exit(1);
     }
-    return new Uint8Array(readFileSync(filePath));
+    return { data: new Uint8Array(readFileSync(filePath)), isText: false };
   }
 
-  // Read from stdin (fd 0)
+  // Read from stdin (fd 0) — treat as text input
   try {
-    return new Uint8Array(readFileSync(0));
+    const buf = new Uint8Array(readFileSync(0));
+    return { data: buf, isText: buf.length > 0 };
   } catch (err: any) {
     console.error(`Error reading stdin: ${err.message ?? String(err)}`);
     process.exit(1);
@@ -88,8 +89,8 @@ function readInput(): Uint8Array {
 // Encode pipeline (reuse webapp protocol)
 // ─────────────────────────────────────────────────────────────────────────────────
 
-function buildFrames(data: Uint8Array): Uint8Array[] {
-  const result = packetize(data, false, true);
+function buildFrames(data: Uint8Array, isText: boolean): Uint8Array[] {
+  const result = packetize(data, isText, true);
   return scheduleFrames(result.packets, result.totalGenerations);
 }
 
@@ -122,8 +123,11 @@ function main() {
   }
 
   let data: Uint8Array;
+  let isText: boolean;
   try {
-    data = readInput();
+    const input = readInput();
+    data = input.data;
+    isText = input.isText;
   } catch (err: any) {
     console.error(`Error reading input: ${err.message ?? String(err)}`);
     process.exit(1);
@@ -134,7 +138,7 @@ function main() {
     process.exit(1);
   }
 
-  const packets = buildFrames(data);
+  const packets = buildFrames(data, isText);
 
   // Pre-render all QR matrices to terminal strings
   const frames: string[][] = [];
