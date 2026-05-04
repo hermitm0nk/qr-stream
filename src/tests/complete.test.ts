@@ -423,7 +423,7 @@ describe('Packetizer', () => {
     expect(result.isText).toBe(true);
     expect(result.isCompressed).toBe(false);
     expect(result.sourceGenerations).toBe(1);
-    expect(result.totalGenerations).toBeGreaterThanOrEqual(2); // 1 source + parity
+    expect(result.totalGenerations).toBeGreaterThanOrEqual(1);
     expect(result.dataLength).toBe(data.length);
     expect(result.packets.length).toBeGreaterThan(0);
 
@@ -449,7 +449,7 @@ describe('Packetizer', () => {
 
     expect(result.isText).toBe(false);
     expect(result.sourceGenerations).toBeGreaterThanOrEqual(3);
-    expect(result.totalGenerations).toBeGreaterThan(result.sourceGenerations);
+    expect(result.totalGenerations).toBeGreaterThanOrEqual(result.sourceGenerations);
     expect(result.dataLength).toBe(data.length);
 
     const { parseHeader } = await import('@/core/protocol/packet');
@@ -620,8 +620,14 @@ describe('End-to-End', () => {
     const { assemblePayload } = await import('@/core/reconstruct/assemble');
     const { K, MAX_PAYLOAD_SIZE } = await import('@/core/protocol/constants');
 
-    const data = new TextEncoder().encode('Outer RS saves the day when a whole generation is lost!');
+    // Large payload (>34 source generations) so outer RS actually creates parity.
+    const data = new TextEncoder().encode(
+      'Outer RS saves the day when a whole generation is lost! '.repeat(2000),
+    );
     const result = packetize(data, false, false);
+    expect(result.sourceGenerations).toBeGreaterThanOrEqual(34);
+    expect(result.totalGenerations).toBeGreaterThan(result.sourceGenerations);
+
     const frames = scheduleFrames(result.packets, result.totalGenerations);
 
     const decoder = new GenerationDecoder(K, MAX_PAYLOAD_SIZE);
@@ -654,6 +660,6 @@ describe('End-to-End', () => {
 
     const assembled = assemblePayload(solvedMap, result.totalGenerations, result.dataLength);
     const recovered = new TextDecoder().decode(assembled);
-    expect(recovered).toBe('Outer RS saves the day when a whole generation is lost!');
+    expect(recovered).toBe(new TextDecoder().decode(data));
   });
 });

@@ -1,109 +1,77 @@
 /**
  * Benchmark: confirm outer EC reduces tail waiting time.
  *
- * Simulates frame loss and compares frames needed to decode with
- * outer EC (any G of G+P generations) vs without (all G source gens).
+ * Simulates frame loss at the packet level and compares decode success
+ * with outer EC (any G of G+P generations) vs without (all G source gens).
  */
 import { describe, it, expect } from 'vitest';
 import { packetize } from '@/core/sender/packetizer';
 import { scheduleFrames } from '@/core/sender/scheduler';
-import { generateQRMatrix } from '@/core/qr/qr_encode';
-import { rasterizeQR } from '@/core/qr/frame_raster';
-import { createQRGif } from '@/core/gif/gif_render';
-import { parseGif, renderGifFrame } from '@/core/gif/gif_parser';
-import { decodeQRFromCanvas } from '@/core/qr/qr_decode';
 import { parsePacket } from '@/core/protocol/packet';
 import { GenerationDecoder } from '@/core/fec/rlnc_decoder';
 import { assemblePayload } from '@/core/reconstruct/assemble';
-import { K, MAX_PAYLOAD_SIZE, QR_VERSION, ECC_LEVEL, FRAME_DELAY_MS, sourceGenerationsFromTotal } from '@/core/protocol/constants';
-import { Xoshiro128 } from '@/core/fec/xoshiro';
+import { K, MAX_PAYLOAD_SIZE } from '@/core/protocol/constants';
 
 describe('Outer EC Benefit', () => {
-  it('should decode with fewer frames when outer EC is active vs requiring all source gens', async () => {
-    // Use ~10KB of random (uncompressible) data to force multiple generations
-    const payload = new Uint8Array(10000);
-    crypto.getRandomValues(payload);
+  it('should succeed with outer EC when a source generation is lost, while without EC fails', async () => {
+    // Use ~120KB of random (uncompressible) data to force >34 source generations
+    // so outer RS actually creates parity generations.
+    const payload = new Uint8Array(120000);
+    for (let i = 0; i < payload.length; i += 65536) {
+      crypto.getRandomValues(payload.subarray(i, Math.min(i + 65536, payload.length)));
+    }
 
     const result = packetize(payload, false, true);
+    expect(result.sourceGenerations).toBeGreaterThanOrEqual(34);
+    expect(result.totalGenerations).toBeGreaterThan(result.sourceGenerations);
+
     const frames = scheduleFrames(result.packets, result.totalGenerations);
 
-    // Build GIF (production path)
-    const imageFrames: Uint8Array[] = [];
-    let width = 0;
-    let height = 0;
-    for (const frame of frames) {
-      const matrix = generateQRMatrix(frame, QR_VERSION, ECC_LEVEL);
-      const imageData = rasterizeQR(matrix, 4);
-      if (width === 0) {
-        width = imageData.width;
-        height = imageData.height;
-      }
-      imageFrames.push(new Uint8Array(imageData.data.buffer));
-    }
-    const gifBytes = createQRGif(imageFrames, FRAME_DELAY_MS, width, height);
-    const gifData = parseGif(gifBytes);
+    // Drop ALL frames from the LAST source generation
+    const missingGen = result.sourceGenerations - 1;
 
-    // Deterministic loss pattern: seeded RNG drops frames with bias against
-    // higher generation indices to simulate "tail loss" where the last
-    // source generation is hardest to complete.
-    const rng = new Xoshiro128(42);
-    const baseDropRate = 0.10;
-
-    // Decode WITH outer EC benefit (stop at sourceGenerations solved)
+    // With EC: can use parity generations
     const decoderWithEC = new GenerationDecoder(K, MAX_PAYLOAD_SIZE);
     const solvedWithEC = new Set<number>();
-    let framesNeededWithEC = 0;
+    let packetsNeededWithEC = 0;
 
-    // Decode WITHOUT outer EC benefit (require all source generations)
+    // Without EC: must solve all source generations
     const decoderWithoutEC = new GenerationDecoder(K, MAX_PAYLOAD_SIZE);
     const solvedWithoutEC = new Set<number>();
-    let framesNeededWithoutEC = 0;
 
-    for (let i = 0; i < gifData.frames.length; i++) {
-      const rgba = renderGifFrame(gifData, i);
-      const imageData = new ImageData(rgba, gifData.width, gifData.height);
-      const decodedBytes = decodeQRFromCanvas(imageData);
-      if (!decodedBytes) continue;
+    for (let i = 0; i < frames.length; i++) {
+      const pkt = parsePacket(frames[i]!);
+      if (pkt.header.generationIndex === missingGen) continue;
 
-      const pkt = parsePacket(decodedBytes);
       const isSystematic = pkt.header.symbolIndex < K;
-
-      // Tail-loss bias: drop rate increases with generation index
-      const genIndex = pkt.header.generationIndex;
-      const tailBias = (genIndex / result.totalGenerations) * 0.20;
-      const drop = (rng.next() / 0xffffffff) < (baseDropRate + tailBias);
-
-      // Feed to both decoders
-      if (!drop) {
-        if (isSystematic) {
-          decoderWithEC.addSystematicSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex);
-          decoderWithoutEC.addSystematicSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex);
-        } else {
-          decoderWithEC.addCodedSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex - K);
-          decoderWithoutEC.addCodedSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex - K);
-        }
-
-        if (decoderWithEC.isSolved(pkt.header.generationIndex)) {
-          solvedWithEC.add(pkt.header.generationIndex);
-        }
-        if (decoderWithoutEC.isSolved(pkt.header.generationIndex) && pkt.header.generationIndex < result.sourceGenerations) {
-          solvedWithoutEC.add(pkt.header.generationIndex);
-        }
+      if (isSystematic) {
+        decoderWithEC.addSystematicSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex);
+        decoderWithoutEC.addSystematicSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex);
+      } else {
+        decoderWithEC.addCodedSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex - K);
+        decoderWithoutEC.addCodedSymbol(pkt.header.generationIndex, pkt.payload, pkt.header.symbolIndex - K);
       }
 
-      if (framesNeededWithEC === 0 && solvedWithEC.size >= result.sourceGenerations) {
-        framesNeededWithEC = i + 1;
+      if (decoderWithEC.isSolved(pkt.header.generationIndex)) {
+        solvedWithEC.add(pkt.header.generationIndex);
       }
-      if (framesNeededWithoutEC === 0 && solvedWithoutEC.size >= result.sourceGenerations) {
-        framesNeededWithoutEC = i + 1;
+      if (decoderWithoutEC.isSolved(pkt.header.generationIndex) && pkt.header.generationIndex < result.sourceGenerations) {
+        solvedWithoutEC.add(pkt.header.generationIndex);
+      }
+
+      if (packetsNeededWithEC === 0 && solvedWithEC.size >= result.sourceGenerations) {
+        packetsNeededWithEC = i + 1;
       }
     }
 
-    // With outer EC we should have finished; without EC may or may not
-    expect(framesNeededWithEC).toBeGreaterThan(0);
+    // With EC should succeed
     expect(solvedWithEC.size).toBeGreaterThanOrEqual(result.sourceGenerations);
+    expect(packetsNeededWithEC).toBeGreaterThan(0);
 
-    // Assemble with outer EC
+    // Without EC should fail (missing one source generation)
+    expect(solvedWithoutEC.size).toBeLessThan(result.sourceGenerations);
+
+    // Assemble and verify
     const solvedMap = new Map<number, Uint8Array[]>();
     for (const genIdx of solvedWithEC) {
       solvedMap.set(genIdx, decoderWithEC.getSourceSymbols(genIdx)!);
@@ -113,67 +81,39 @@ describe('Outer EC Benefit', () => {
     const decompressed = inflateSync(assembled);
     expect(decompressed).toEqual(payload);
 
-    // The key assertion: outer EC should finish no later than without EC,
-    // and typically earlier when tail loss occurs.
-    if (framesNeededWithoutEC > 0) {
-      expect(framesNeededWithEC).toBeLessThanOrEqual(framesNeededWithoutEC);
-    }
-
-    // Log the actual numbers for human inspection
-    console.log('Outer EC benchmark:', {
+    console.log('Outer EC benefit:', {
       payloadBytes: payload.length,
       compressedBytes: result.dataLength,
-      totalGenerations: result.totalGenerations,
       sourceGenerations: result.sourceGenerations,
-      totalFrames: gifData.frames.length,
-      framesNeededWithEC,
-      framesNeededWithoutEC: framesNeededWithoutEC || 'never',
+      totalGenerations: result.totalGenerations,
+      totalPackets: frames.length,
+      packetsNeededWithEC,
       solvedWithEC: solvedWithEC.size,
       solvedWithoutEC: solvedWithoutEC.size,
-      savings: framesNeededWithoutEC > 0
-        ? `${(((framesNeededWithoutEC - framesNeededWithEC) / framesNeededWithoutEC) * 100).toFixed(1)}%`
-        : 'N/A (without EC failed)',
     });
-  }, 15000);
+  }, 30000);
 
   it('should recover when a whole source generation is missing', async () => {
-    // Small payload: 3 source gens + 1 parity = 4 total
+    // Large payload (>34 source generations) so outer RS creates parity.
     const payload = new TextEncoder().encode(
-      'Whole generation missing test payload that is long enough. '.repeat(10),
+      'Whole generation missing test payload that is long enough. '.repeat(2000),
     );
 
     const result = packetize(payload, false, false);
+    expect(result.sourceGenerations).toBeGreaterThanOrEqual(34);
+    expect(result.totalGenerations).toBeGreaterThan(result.sourceGenerations);
+
     const frames = scheduleFrames(result.packets, result.totalGenerations);
 
-    const imageFrames: Uint8Array[] = [];
-    let width = 0;
-    let height = 0;
-    for (const frame of frames) {
-      const matrix = generateQRMatrix(frame, QR_VERSION, ECC_LEVEL);
-      const imageData = rasterizeQR(matrix, 4);
-      if (width === 0) {
-        width = imageData.width;
-        height = imageData.height;
-      }
-      imageFrames.push(new Uint8Array(imageData.data.buffer));
-    }
-    const gifBytes = createQRGif(imageFrames, FRAME_DELAY_MS, width, height);
-    const gifData = parseGif(gifBytes);
-
-    // Drop EVERY frame from the LAST source generation (generationIndex = sourceGenerations - 1)
+    // Drop EVERY frame from the LAST source generation
     const missingGen = result.sourceGenerations - 1;
 
     const decoder = new GenerationDecoder(K, MAX_PAYLOAD_SIZE);
     const solvedGens = new Set<number>();
 
-    for (let i = 0; i < gifData.frames.length; i++) {
-      const rgba = renderGifFrame(gifData, i);
-      const imageData = new ImageData(rgba, gifData.width, gifData.height);
-      const decodedBytes = decodeQRFromCanvas(imageData);
-      if (!decodedBytes) continue;
-
-      const pkt = parsePacket(decodedBytes);
-      if (pkt.header.generationIndex === missingGen) continue; // drop all frames from missing gen
+    for (let i = 0; i < frames.length; i++) {
+      const pkt = parsePacket(frames[i]!);
+      if (pkt.header.generationIndex === missingGen) continue;
 
       const isSystematic = pkt.header.symbolIndex < K;
       if (isSystematic) {
@@ -187,7 +127,7 @@ describe('Outer EC Benefit', () => {
       }
     }
 
-    // We should still have enough generations solved (sourceGenerations) because
+    // We should still have enough generations solved because
     // parity generation(s) compensate for the missing source generation.
     expect(solvedGens.size).toBeGreaterThanOrEqual(result.sourceGenerations);
 
@@ -198,5 +138,5 @@ describe('Outer EC Benefit', () => {
 
     const assembled = assemblePayload(solvedMap, result.totalGenerations, result.dataLength);
     expect(assembled).toEqual(payload);
-  });
+  }, 30000);
 });

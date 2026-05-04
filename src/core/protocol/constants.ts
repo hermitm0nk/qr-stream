@@ -67,7 +67,7 @@ export const OUTER_EC_OVERHEAD = 0.03;
 
 /** Compute number of parity generations for G source generations. */
 export function parityCount(sourceGenerations: number): number {
-  return Math.max(1, Math.ceil(sourceGenerations * OUTER_EC_OVERHEAD));
+  return Math.ceil(sourceGenerations * OUTER_EC_OVERHEAD);
 }
 
 /** Compute source generation count from total generations. */
