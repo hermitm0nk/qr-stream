@@ -112,12 +112,12 @@ function handleFrame(imageData: ImageData): void {
   current.isCompressed = h.compressed;
 
   current.stats.totalFrames++;
+  current.stats.framesWithQR++;
 
   // Dedup: generationIndex:symbolIndex
   const dedupKey = `${h.generationIndex}:${h.symbolIndex}`;
   if (current.dedup.has(dedupKey)) return;
   current.dedup.add(dedupKey);
-  current.stats.framesWithQR++;
 
   // Feed to decoder
   const gen = h.generationIndex;
@@ -251,12 +251,14 @@ function reconstructData(state: DecodeState): void {
 function reportProgress(state: DecodeState): void {
   const totalGens = state.totalGenerations;
   const solvedGens = state.solvedGenerations.size;
+  const needed = state.sourceGenerations > 0 ? K * state.sourceGenerations : 0;
 
-    self.postMessage({
+  self.postMessage({
     type: 'progress',
     totalFrames: state.stats.totalFrames,
     framesWithQR: state.stats.framesWithQR,
     acceptedPackets: state.stats.acceptedPackets,
+    neededPackets: needed,
     receivedPackets: state.receivedPackets,
     solvedGenerations: solvedGens,
     totalGenerations: totalGens,
