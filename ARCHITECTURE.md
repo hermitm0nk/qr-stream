@@ -1,4 +1,4 @@
-# QR Stream — Architecture
+# QR Stream - Architecture
 
 This document describes the internal design, wire format, and algorithms used by QR Stream. For user-facing installation and usage instructions, see [README.md](README.md).
 
@@ -103,26 +103,26 @@ src/
 
 ### Runtime
 
-- **preact** — UI framework (React-compatible, ~10 KB)
-- **qrcode-generator** — QR matrix generation (versions 1–40, all ECC levels)
-- **jsqr** — QR decoding from `ImageData` (grayscale + adaptive thresholding internally)
-- **gifenc** — Animated GIF encoder (2-colour palette, LZW compression)
-- **fflate** — Fast deflate/inflate (compression for large payloads)
+- **preact** - UI framework (React-compatible, ~10 KB)
+- **qrcode-generator** - QR matrix generation (versions 1–40, all ECC levels)
+- **jsqr** - QR decoding from `ImageData` (grayscale + adaptive thresholding internally)
+- **gifenc** - Animated GIF encoder (2-colour palette, LZW compression)
+- **fflate** - Fast deflate/inflate (compression for large payloads)
 
 ### Dev / Build
 
-- **vite** — Build tool, dev server, worker bundling
-- **@preact/preset-vite** — Preact JSX transform for Vite
-- **vitest** — Test runner
-- **happy-dom** — DOM environment for headless tests
-- **typescript** — Type checking
-- **esbuild** — CLI bundle (via `build:cli` script)
+- **vite** - Build tool, dev server, worker bundling
+- **@preact/preset-vite** - Preact JSX transform for Vite
+- **vitest** - Test runner
+- **happy-dom** - DOM environment for headless tests
+- **typescript** - Type checking
+- **esbuild** - CLI bundle (via `build:cli` script)
 
 ---
 
 ## The Protocol
 
-There is **one hardcoded profile** — no negotiation, no manifest, no session IDs.
+There is **one hardcoded profile** - no negotiation, no manifest, no session IDs.
 
 ### Profile Constants
 
@@ -311,7 +311,7 @@ Sender and receiver are the same codebase. There is no need for profile negotiat
 
 ### Why RLNC instead of simple repetition?
 
-Simple repetition (send every packet N times) is easy but wasteful. RLNC means **any K linearly independent symbols** decode a generation — you don't need specific ones. This maximizes the information content of every received frame.
+Simple repetition (send every packet N times) is easy but wasteful. RLNC means **any K linearly independent symbols** decode a generation - you don't need specific ones. This maximizes the information content of every received frame.
 
 ### Why V10 instead of larger versions?
 
@@ -330,14 +330,14 @@ GIF is universally supported, requires no codecs, and every frame is a full stil
 ### Why floor(3%) for outer RS instead of always having parity?
 
 Outer RS overhead is `Math.floor(sourceGenerations × 0.03)`:
-- **G ≤ 33:** 0 parity generations — small files recover fast (no wasted round-robin slots).
-- **G ≥ 34:** 1+ parity generations — protects against whole-generation loss (e.g. a camera burst-drop at the wrong moment).
+- **G ≤ 33:** 0 parity generations - small files recover fast (no wasted round-robin slots).
+- **G ≥ 34:** 1+ parity generations - protects against whole-generation loss (e.g. a camera burst-drop at the wrong moment).
 
 Using `Math.floor` (not `Math.ceil`) ensures small files genuinely get zero parity. At G=34 the overhead is ~3% as intended.
 
 ### Why neededPackets = K × totalGenerations instead of K × sourceGenerations?
 
-The frame scheduler interleaves symbols round-robin across **all** generations (source + parity). You can't receive packets selectively — every cycle of the GIF gives one symbol to each generation. So the practical minimum to decode is `K × totalGenerations`, which accounts for the interleaving overhead. This makes the progress indicator match reality (e.g. 2 source + 1 parity = 48 needed, not 32).
+The frame scheduler interleaves symbols round-robin across **all** generations (source + parity). You can't receive packets selectively - every cycle of the GIF gives one symbol to each generation. So the practical minimum to decode is `K × totalGenerations`, which accounts for the interleaving overhead. This makes the progress indicator match reality (e.g. 2 source + 1 parity = 48 needed, not 32).
 
 ---
 
@@ -346,7 +346,7 @@ The frame scheduler interleaves symbols round-robin across **all** generations (
 ### Swapped arguments to `generateCoefficients`
 
 ```ts
-// WRONG — causes massive array allocation and browser hang
+// WRONG - causes massive array allocation and browser hang
 generateCoefficients(seed, 16)
 
 // CORRECT
@@ -363,7 +363,7 @@ If `gifUrl` (a `blob:` URL) is not revoked with `URL.revokeObjectURL()` before g
 
 ### Deterministic vs random frame loss in tests
 
-Never use `Math.random()` for frame-loss simulation in tests — it causes flaky failures due to shared RNG state across test files. Use a deterministic pattern like `(i + 1) % 5 !== 0`.
+Never use `Math.random()` for frame-loss simulation in tests - it causes flaky failures due to shared RNG state across test files. Use a deterministic pattern like `(i + 1) % 5 !== 0`.
 
 ### `transfer` list type mismatch
 

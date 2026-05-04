@@ -1,6 +1,6 @@
 # QR Stream
 
-Transfer files and text between devices by displaying an animated sequence of QR codes and reading it with a camera. No network, no Bluetooth, no cables — just light.
+Transfer files and text between devices by displaying an animated sequence of QR codes and reading it with a camera. No network, no Bluetooth, no cables - just light.
 
 **Live demo:** [https://230590.xyz/hermes-web-demos/qr-transfer/](https://230590.xyz/hermes-web-demos/qr-transfer/)
 
@@ -101,8 +101,8 @@ npm run build
 ```
 
 Produces:
-- `dist/index.html` and `dist/assets/*` — the web app
-- `dist/qr-stream.js` — the self-contained CLI bundle
+- `dist/index.html` and `dist/assets/*` - the web app
+- `dist/qr-stream.js` - the self-contained CLI bundle
 
 ### Preview the production build
 
@@ -150,4 +150,4 @@ For a deep dive into the packet format, algorithms, and design decisions, see **
 
 ## License
 
-MIT — built for fun and utility.
+MIT - built for fun and utility.
