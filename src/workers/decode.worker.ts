@@ -251,7 +251,7 @@ function reconstructData(state: DecodeState): void {
 function reportProgress(state: DecodeState): void {
   const totalGens = state.totalGenerations;
   const solvedGens = state.solvedGenerations.size;
-  const needed = state.sourceGenerations > 0 ? K * state.sourceGenerations : 0;
+  const needed = state.totalGenerations > 0 ? K * state.totalGenerations : 0;
 
   self.postMessage({
     type: 'progress',

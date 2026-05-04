@@ -355,10 +355,10 @@ describe('Payload Assembly', () => {
     solved.set(0, g0);
     solved.set(1, g1);
 
-    // 2 source gens + 1 parity = 3 total. Both source gens present.
+    // 2 source gens + 0 parity = 2 total (small file, no outer RS). Both source gens present.
     // dataLength spans into second generation so we can verify cross-gen assembly
     const dataLength = K * MAX_PAYLOAD_SIZE + 4;
-    const data = assemblePayload(solved, 3, dataLength);
+    const data = assemblePayload(solved, 2, dataLength);
     expect(data.length).toBe(dataLength);
     expect(data[0]).toBe(1);
     expect(data[1]).toBe(2);
@@ -385,8 +385,8 @@ describe('Payload Assembly', () => {
     const solved = new Map<number, Uint8Array[]>();
     solved.set(0, g0);
 
-    // 1 source gen + 1 parity = 2 total. Source gen present.
-    const data = assemblePayload(solved, 2, 3);
+    // 1 source gen + 0 parity = 1 total (small file, no outer RS). Source gen present.
+    const data = assemblePayload(solved, 1, 3);
     expect(data.length).toBe(3);
     expect(data[0]).toBe(1);
     expect(data[1]).toBe(2);
@@ -403,7 +403,7 @@ describe('Payload Assembly', () => {
     const solved = new Map<number, Uint8Array[]>();
     solved.set(0, g0);
 
-    // 3 source gens + 1 parity = 4 total, but only 1 solved
+    // 4 source gens + 0 parity = 4 total, but only 1 solved
     expect(() => assemblePayload(solved, 4, 3)).toThrow('only 1 generations solved');
   });
 });
