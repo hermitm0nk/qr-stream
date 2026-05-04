@@ -1,418 +1,146 @@
-# QR-over-GIF Transfer
+# QR Stream
 
-Transfer files and text between devices by displaying an animated GIF of QR codes and reading it with a camera. No network, no Bluetooth, no cables — just light.
+Transfer files and text between devices by displaying an animated sequence of QR codes and reading it with a camera. No network, no Bluetooth, no cables — just light.
 
-Live demo: `https://230590.xyz/hermes-web-demos/qr-transfer/`
-
----
-
-## Table of Contents
-
-1. [What It Does](#what-it-does)
-2. [High-Level Architecture](#high-level-architecture)
-3. [Project Structure](#project-structure)
-4. [Dependencies](#dependencies)
-5. [The Protocol](#the-protocol)
-6. [Algorithms](#algorithms)
-7. [Data Flow](#data-flow)
-8. [Development](#development)
-9. [Design Decisions](#design-decisions)
-10. [Common Pitfalls](#common-pitfalls)
+**Live demo:** [https://230590.xyz/hermes-web-demos/qr-transfer/](https://230590.xyz/hermes-web-demos/qr-transfer/)
 
 ---
 
-## What It Does
+## Installation
 
-- **Sender**: You paste text or pick a file. The app compresses the data, splits it into chunks, encodes each chunk as a QR code, and renders an animated GIF that flips through the codes.
-- **Receiver**: You point your camera at the GIF (or upload the GIF file). The app decodes each frame, reassembles the original data, and offers it for download or shows it as text.
-
-The transfer survives frame loss, glare, reflections, and partial obstructions thanks to fountain coding (RLNC over GF(256)).
-
----
-
-## High-Level Architecture
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Sender UI     │────▶│  Encode Worker  │────▶│   GIF Worker    │
-│  (Preact hooks) │     │  (Web Worker)   │     │  (Web Worker)   │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                                                        │
-                                                        ▼
-                                                 ┌──────────────┐
-                                                 │  .gif file   │
-                                                 │  (animated)  │
-                                                 └──────────────┘
-                                                        │
-┌─────────────────┐     ┌─────────────────┐            │
-│   Receiver UI   │◀────│  Decode Worker  │◀───────────┘
-│  (Preact hooks) │     │  (Web Worker)   │    camera / file
-└─────────────────┘     └─────────────────┘
-```
-
-Everything heavy (compression, RLNC encoding, GIF encoding, QR decoding) runs in dedicated Web Workers so the UI stays responsive.
-
----
-
-## Project Structure
-
-```
-src/
-├── app/
-│   ├── app.tsx              # App shell with hash-based tab routing
-│   └── routes/
-│       ├── sender.tsx       # Text/file input, GIF preview, download
-│       └── receiver.tsx     # Camera scanner, GIF upload, results
-├── core/
-│   ├── fec/                 # Forward Error Correction (RLNC)
-│   │   ├── gf256.ts         # GF(256) arithmetic (log/antilog tables)
-│   │   ├── rlnc_encoder.ts  # Systematic RLNC encoder
-│   │   ├── rlnc_decoder.ts  # Incremental Gaussian-elimination decoder
-│   │   └── xoshiro.ts       # xoshiro128** PRNG for deterministic coeffs
-│   ├── gif/
-│   │   ├── gif_parser.ts    # GIF decoding (LZW, frame extraction)
-│   │   └── gif_render.ts    # GIF encoding (2-colour palette, gifenc)
-│   ├── preprocess/
-│   │   └── compress.ts      # (legacy) deflate helpers
-│   ├── protocol/
-│   │   ├── constants.ts     # Protocol constants: K/R, sizes, flags
-│   │   ├── crc32c.ts        # CRC32-C (Castagnoli) with lookup table
-│   │   └── packet.ts        # 8-byte fixed header + payload + CRC
-│   ├── qr/
-│   │   ├── qr_encode.ts     # QR matrix generation (qrcode-generator)
-│   │   ├── qr_decode.ts     # QR decoding wrapper (jsQR)
-│   │   └── frame_raster.ts  # Matrix → RGBA raster (scale, quiet zone)
-│   ├── reconstruct/
-│   │   └── assemble.ts      # Concatenate generations, trim padding
-│   └── sender/
-│       ├── packetizer.ts    # Data → packets: compress, split, wrap metadata
-│       └── scheduler.ts     # Interleave systematic/coded symbols into frames
-├── workers/
-│   ├── encode.worker.ts     # Orchestrates packetizer + scheduler
-│   ├── decode.worker.ts     # Feeds frames to RLNC decoder, reassembles
-│   └── gif.worker.ts        # Rasters packets → RGBA → GIF via gifenc
-├── tests/
-│   ├── complete.test.ts     # Unit tests for all core modules
-│   ├── frame_decode.test.ts # QR encode→decode roundtrip per frame
-│   ├── gif_roundtrip.test.ts# Full GIF encode→parse→decode roundtrip
-│   ├── prod_roundtrip.test.ts# Deterministic frame-loss recovery test
-│   ├── test_qr_modules.test.ts# QR capacity, raster, GIF render tests
-│   └── setup.ts             # happy-dom test environment setup
-├── types/
-│   └── gifenc.d.ts          # Type declarations for gifenc
-├── index.html               # Single-page app entry
-└── main.tsx                 # Renders <App/> into #root
-```
-
----
-
-## Dependencies
-
-### Runtime
-
-| Library | Purpose |
-|---------|---------|
-| **preact** | UI framework (React-compatible, 10 KB) |
-| **qrcode-generator** | QR matrix generation (versions 1–40, all ECC levels) |
-| **jsqr** | QR decoding from `ImageData` (grayscale + adaptive thresholding internally) |
-| **gifenc** | Animated GIF encoder (2-colour palette, LZW compression) |
-| **fflate** | Fast deflate/inflate (compression for large payloads) |
-
-### Dev / Build
-
-| Tool | Purpose |
-|------|---------|
-| **vite** | Build tool, dev server, worker bundling |
-| **@preact/preset-vite** | Preact JSX transform for Vite |
-| **vitest** | Test runner |
-| **happy-dom** | DOM environment for headless tests |
-| **typescript** | Type checking |
-
----
-
-## The Protocol
-
-There is **one hardcoded profile** — no negotiation, no manifest, no session IDs.
-
-### Profile Constants
-
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| QR Version | **V10** | 57×57 modules; good balance of density and readability |
-| ECC Level | **M** (~15% correction) | Survives minor blur/glare |
-| Source symbols per generation (`K`) | **16** | Decoding latency vs. generation count tradeoff |
-| Repair symbols per generation (`R`) | **8** | 50% overhead; handles ~33% frame loss |
-| Symbol payload | **201 bytes** | V10-M capacity (213 B) minus 8 B header minus 4 B CRC |
-| Max packet size | **213 bytes** | Fits exactly in V10-M byte mode |
-| Frame delay | **200 ms** | 5 fps; readable by most cameras |
-| Max file size | **~8 MB** | 12-bit generation index × 16 × 201 B ≈ 13 MB; capped at 8 MB |
-
-### Packet Format (fixed 8-byte header)
-
-All multi-byte fields are **little-endian**.
-
-```
-Offset  Size  Field
-─────────────────────────────────────────────────────
- 0      1     Magic: 0x51 ('Q')
- 1      4     Packed word (32 bits):
-              ├─ bits 0–11   : generation index (0–4095)
-              ├─ bits 12–23  : total generations (0–4095)
-              ├─ bits 24–28  : symbol index (0–31)
-              ├─ bit 29      : isText flag (1 = text, 0 = file)
-              ├─ bit 30      : isLastGeneration flag
-              └─ bit 31      : compressed flag
- 5      3     Data length (preprocessed size, 24-bit, 0–16,777,215)
- 8      201   Payload (zero-padded to 201 B)
-209     4     CRC32-C over bytes 0–208
-```
-
-Total: **213 bytes** → fits in a V10-M QR code.
-
-**Symbol index convention:**
-- `0–15` = systematic symbol (`sourceIndex = symbolIndex`)
-- `16–23` = coded repair symbol (`codedSymbolIndex = symbolIndex − 16`)
-- `24–31` = reserved
-
-### File Metadata Wrapping
-
-For file transfers (not text), the raw file bytes are prefixed with a tiny metadata envelope before compression:
-
-```
-[1 byte: filename length (0–255)]
-[N bytes: filename UTF-8]
-[1 byte: MIME type length (0–255)]
-[M bytes: MIME type UTF-8]
-[rest: actual file data]
-```
-
-This lets the receiver restore the original filename and MIME type on download.
-
----
-
-## Algorithms
-
-### 1. RLNC over GF(256)
-
-We use **Random Linear Network Coding** with a systematic encoding.
-
-**Encoder (`rlnc_encoder.ts`)**:
-- Given `K` source symbols, output `K` systematic + `R` coded symbols.
-- Systematic symbols are the original data (identity coefficient vector).
-- Each coded symbol is a random linear combination:  
-  `C_j = Σ coeff[i] · S_i`  (multiplication and addition in GF(256)).
-- Coefficients are deterministically derived from `(generationIndex, codedSymbolIndex)` via a xoshiro128** PRNG.
-
-**Decoder (`rlnc_decoder.ts`)**:
-- Maintains an augmented coefficient matrix in **reduced row-echelon form (RREF)**.
-- Each incoming symbol is forward-eliminated against existing pivots, then if it has a new pivot:
-  1. Scale the row so pivot = 1
-  2. Eliminate the new pivot from all existing rows
-  3. Insert maintaining pivot-column order
-- When `rank == K`, the matrix is identity and the RHS data is the reconstructed source symbols.
-
-### 2. GF(256) Arithmetic (`gf256.ts`)
-
-- Irreducible polynomial: `x^8 + x^4 + x^3 + x^2 + 1` (0x11d, same as AES).
-- Pre-computed **log/antilog tables** at module load time for O(1) multiply/divide/inverse.
-- Addition/subtraction = XOR (same operation in characteristic-2 fields).
-
-### 3. QR Code Generation (`qr_encode.ts`, `frame_raster.ts`)
-
-- Uses `qrcode-generator` library to produce boolean module matrices.
-- Capacity is computed from an embedded RS block table (versions 1–40, all ECC levels).
-- `rasterizeQR()` scales each module to `scale × scale` pixels and adds a 4-module white quiet zone.
-- Output is pure black/white RGBA `ImageData`.
-
-### 4. QR Decoding (`qr_decode.ts`)
-
-- Thin wrapper around `jsQR`.
-- `jsQR` internally converts RGBA → grayscale and applies adaptive thresholding (8×8 regions with 5×5 averaging). No external preprocessing is needed.
-- For camera scanning we pass `inversionAttempts: 'attemptBoth'` (handles glare/reflections). For GIF file mode we use `'dontInvert'` (our QRs are black-on-white, giving ~50% speedup).
-
-### 5. GIF Encoding (`gif_render.ts`)
-
-- Uses `gifenc` with a **2-colour global palette** (white, black).
-- Each frame is converted from RGBA to indexed (threshold at 50% brightness).
-- The NETSCAPE 2.0 extension sets loop count to infinity.
-- Default delay: 200 ms per frame (5 fps).
-
-### 6. Frame Scheduling (`scheduler.ts`)
-
-- Systematic symbols are interleaved across generations first, then coded symbols.
-- Generation order is deterministically shuffled using `totalGenerations` as a seed.
-- This spreads redundancy evenly: if you watch any prefix of the GIF, you see some symbols from every generation.
-
----
-
-## Data Flow
-
-### Sender
-
-```
-Text or File
-    │
-    ▼
-[Wrap metadata if file]
-    │
-    ▼
-[Optional deflate compression (fflate)]
-    │
-    ▼
-Split into 201-byte symbols
-    │
-    ▼
-Group into generations of K=16
-    │
-    ▼
-RLNC encode each generation → 16 systematic + 8 coded symbols
-    │
-    ▼
-Build packets (8-byte header + payload + CRC32C)
-    │
-    ▼
-Schedule frames (interleave systematic, then coded, shuffle generations)
-    │
-    ▼
-Rasterize each packet to QR code (V10-M, scale=3, 4-module quiet zone)
-    │
-    ▼
-Encode frames into animated GIF (2-colour palette, 200 ms delay)
-    │
-    ▼
-Blob URL → <img> preview + download
-```
-
-### Receiver
-
-```
-Camera frames or GIF file
-    │
-    ▼
-[If camera: software crop center 50% (2× zoom), optional camera zoom API]
-    │
-    ▼
-Decode QR with jsQR → raw bytes
-    │
-    ▼
-Parse packet (verify magic, verify CRC32C)
-    │
-    ▼
-Deduplicate by (generationIndex, symbolIndex)
-    │
-    ▼
-Feed to RLNC decoder (systematic or coded based on symbolIndex)
-    │
-    ▼
-When rank == K for a generation → mark solved
-    │
-    ▼
-When all generations solved:
-    │
-    ├── Text mode → decompress → TextDecoder → show in <textarea>
-    │
-    └── File mode → decompress → strip metadata → Blob + download link
-```
-
----
-
-## Development
+### npm
 
 ```bash
-# Install dependencies
+npm install -g qr-stream
+```
+
+### Bun
+
+```bash
+bun install -g qr-stream
+```
+
+You can also run it directly without installing:
+
+```bash
+npx qr-stream [file]
+bunx qr-stream [file]
+```
+
+---
+
+## CLI Usage
+
+### Encode text or a file into a looping QR sequence
+
+```bash
+# Read from file
+qr-stream document.pdf
+
+# Read from stdin
+echo "Hello, world!" | qr-stream
+
+# Pipe file contents
+base64 image.png | qr-stream
+```
+
+The terminal clears, enters an alternate screen buffer, and displays the QR frames in a loop at 10 FPS. Press **q** or **Ctrl-C** to quit.
+
+### Start the web app preview server
+
+```bash
+qr-stream --serve
+```
+
+Serves the built web UI on `http://localhost:3000` (default). Change the port with the `PORT` environment variable:
+
+```bash
+PORT=8080 qr-stream --serve
+```
+
+The server resolves the `dist/` directory automatically, so it works from both the bundled CLI and a local checkout.
+
+### CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `-h`, `--help` | Show usage information |
+| `-s`, `--serve` | Start the web preview server |
+
+---
+
+## Development Setup
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) >= 18
+- [Bun](https://bun.sh/) (optional, for faster installs)
+
+### Install dependencies
+
+```bash
 npm install
+```
 
-# Dev server (Vite, Preact, hot reload)
+### Start the dev server
+
+```bash
 npm run dev
+```
 
-# Run all tests
-npm run test
+Starts Vite with hot reload on `http://localhost:5173`.
 
-# Run tests in watch mode
-npm run test:watch
+### Build
 
-# Production build (outputs to dist/)
+```bash
 npm run build
+```
 
-# Preview production build locally
+Produces:
+- `dist/index.html` and `dist/assets/*` — the web app
+- `dist/qr-stream.js` — the self-contained CLI bundle
+
+### Preview the production build
+
+```bash
 npm run preview
 ```
 
-### Deploying
+Serves the contents of `dist/` locally exactly as it will run in production.
 
-The project is built as a static SPA and served via nginx:
+### Run tests
 
 ```bash
-npm run build
-cp -r dist/* /var/www/html/hermes-web-demos/qr-transfer/
+npm test
 ```
 
-Clean old hashed assets after copying:
+Runs the full test suite (57 tests) via Vitest.
+
+### Run the CLI from source
 
 ```bash
-cd /var/www/html/hermes-web-demos/qr-transfer
-for f in assets/*; do
-  if ! grep -q "$(basename $f)" index.html; then
-    rm "$f"
-  fi
-done
+bun run src/cli/qr-stream.ts
+# or
+npm run cli
+```
+
+### Build the CLI only
+
+```bash
+npm run build:cli
 ```
 
 ---
 
-## Design Decisions
+## How It Works
 
-### Why a single hardcoded profile?
+1. **Sender** compresses your data, splits it into chunks, and wraps each chunk in a QR code.
+2. The QR codes are shown as an animated sequence (in the terminal or as a GIF in the browser).
+3. **Receiver** scans the sequence with a camera or uploads a GIF, decodes the frames, and reassembles the original file or text.
 
-Sender and receiver are the same codebase. There is no need for profile negotiation, manifest parsing, or version selection. Removing the manifest and session ID simplified the packet format to a compact 8-byte header.
+The protocol uses fountain coding (RLNC over GF(256)) so the transfer survives frame loss, glare, and partial obstructions without needing every single frame.
 
-### Why RLNC instead of simple repetition?
-
-Simple repetition (send every packet N times) is easy but wasteful. RLNC means **any K linearly independent symbols** decode a generation — you don't need specific ones. This maximizes the information content of every received frame.
-
-### Why V10 instead of larger versions?
-
-Larger QR codes (V31, V40) hold more data but require higher camera resolution and sharper focus. V10 is small enough to be readable by average phone cameras at screen distance while still carrying 213 bytes per frame.
-
-### Why GIF instead of MP4/WebM?
-
-GIF is universally supported, requires no codecs, and every frame is a full still image (no inter-frame compression artifacts). The 2-colour palette gives excellent LZW compression (~10:1 vs raw RGBA).
-
-### Why Web Workers?
-
-- **Encode worker**: packetization + scheduling is CPU-bound and blocks the main thread for large files.
-- **GIF worker**: GIF encoding (LZW) is CPU-bound.
-- **Decode worker**: RLNC Gaussian elimination and QR decoding run at 5 fps and must not freeze the UI.
-
----
-
-## Common Pitfalls
-
-### Swapped arguments to `generateCoefficients`
-
-```ts
-// WRONG — causes massive array allocation and browser hang
-generateCoefficients(seed, 16)
-
-// CORRECT
-generateCoefficients(16, seed)
-```
-
-### Stale blob URLs in the sender
-
-If `gifUrl` (a `blob:` URL) is not revoked with `URL.revokeObjectURL()` before generating a new GIF, the browser throws an "object error" when the old `<img>` tries to re-render with a revoked URL. Always call `revokeObjectURL()` in a reset helper.
-
-### Wrong dimensions passed to `createQRGif()`
-
-`createQRGif()` expects the actual image width/height in pixels, **not** the raw buffer byte length. A common bug is passing `rgba.length` (which is `width × height × 4`) as the width parameter.
-
-### Deterministic vs random frame loss in tests
-
-Never use `Math.random()` for frame-loss simulation in tests — it causes flaky failures due to shared RNG state across test files. Use a deterministic pattern like `(i + 1) % 5 !== 0`.
-
-### `transfer` list type mismatch
-
-When passing `ArrayBuffer` via `postMessage` with a transfer list, TypeScript may complain about `ArrayBufferLike` vs `ArrayBuffer`. Cast explicitly: `finalData.buffer as ArrayBuffer`.
+For a deep dive into the packet format, algorithms, and design decisions, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 ---
 
