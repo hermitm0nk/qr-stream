@@ -21,7 +21,7 @@ export default defineConfig({
   worker: {
     format: 'es',
   },
-  base: '/hermes-web-demos/qr-transfer/',
+  base: './',
   build: {
     outDir: 'dist',
     emptyOutDir: true,

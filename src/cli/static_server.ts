@@ -47,22 +47,14 @@ function findWebRoot(): string {
 
 /**
  * Create a static HTTP server for the built web app.
+ * Uses relative asset paths (base: './' in vite.config.ts) so all
+ * requests resolve directly against the dist/ directory.
  *
- * @param port  TCP port to listen on
- * @param host  Host address to bind to (default: '0.0.0.0')
- * @param base  URL path prefix baked into the assets (e.g. '/my-subpath/'), or empty for root
+ * @param port TCP port to listen on
+ * @param host Host address to bind to (default: '0.0.0.0')
  */
-export function startServer(
-  port: number,
-  host?: string,
-  base?: string,
-): Server {
+export function startServer(port: number, host?: string): Server {
   const root = findWebRoot();
-  const basePath = base || '';
-  // Normalise: ensure base starts with / and does not end with /
-  const normalisedBase = basePath
-    ? '/' + basePath.replace(/^\/+|\/+$/g, '')
-    : '';
 
   const server = createServer((req, res) => {
     let pathname = req.url ?? '/';
@@ -70,16 +62,8 @@ export function startServer(
     const qIdx = pathname.indexOf('?');
     if (qIdx !== -1) pathname = pathname.slice(0, qIdx);
 
-    // Strip base prefix if present (so /base/assets/foo.js → /assets/foo.js)
-    let resolved = pathname;
-    if (normalisedBase && pathname.startsWith(normalisedBase + '/')) {
-      resolved = pathname.slice(normalisedBase.length);
-    } else if (normalisedBase === pathname) {
-      resolved = '/';
-    }
-
     // Security: prevent directory traversal
-    const safePath = resolved.replace(/\.{2,}/g, '');
+    const safePath = pathname.replace(/\.{2,}/g, '');
     let filePath = join(root, safePath);
 
     if (!existsSync(filePath) || !filePath.startsWith(root)) {

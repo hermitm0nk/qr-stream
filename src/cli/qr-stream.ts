@@ -32,9 +32,6 @@ import {
 } from './terminal_raster';
 import { startServer } from './static_server';
 
-/** Must match the `base` in vite.config.ts — assets are baked with this prefix. */
-const VITE_BASE = '/hermes-web-demos/qr-transfer/';
-
 const FPS_MS = 100;
 
 // ─────────────────────────────────────────────────────────────────────────────────
@@ -192,7 +189,7 @@ function main() {
       host = args[hostIdx + 1];
     }
 
-    const server = startServer(port, host, VITE_BASE);
+    const server = startServer(port, host);
 
     function shutdown() {
       console.log('\nShutting down server...');
