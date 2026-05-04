@@ -63,7 +63,52 @@ function showHelp(): void {
 // Argument parsing
 // ─────────────────────────────────────────────────────────────────────────────────
 
-function readInput(): { data: Uint8Array; isText: boolean } {
+// ─── MIME type lookup ──────────────────────────────────────────────────────────
+
+const MIME_TYPES: Record<string, string> = {
+  '.txt': 'text/plain',
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+  '.ts': 'application/typescript',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.csv': 'text/csv',
+  '.md': 'text/markdown',
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.zip': 'application/zip',
+  '.gz': 'application/gzip',
+  '.tar': 'application/x-tar',
+  '.mp3': 'audio/mpeg',
+  '.mp4': 'video/mp4',
+  '.wasm': 'application/wasm',
+  '.bin': 'application/octet-stream',
+};
+
+function mimeFromPath(filePath: string): string {
+  const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+  return MIME_TYPES[ext] ?? 'application/octet-stream';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// Argument parsing
+// ─────────────────────────────────────────────────────────────────────────────────
+
+interface InputResult {
+  data: Uint8Array;
+  isText: boolean;
+  filename?: string;
+  mimeType?: string;
+}
+
+function readInput(): InputResult {
   const args = process.argv.slice(2);
 
   if (args.length > 0) {
@@ -72,7 +117,13 @@ function readInput(): { data: Uint8Array; isText: boolean } {
       console.error(`Error: file not found: ${filePath}`);
       process.exit(1);
     }
-    return { data: new Uint8Array(readFileSync(filePath)), isText: false };
+    const basename = filePath.split('/').pop() ?? filePath;
+    return {
+      data: new Uint8Array(readFileSync(filePath)),
+      isText: false,
+      filename: basename,
+      mimeType: mimeFromPath(filePath),
+    };
   }
 
   // Read from stdin (fd 0) — treat as text input
@@ -89,8 +140,13 @@ function readInput(): { data: Uint8Array; isText: boolean } {
 // Encode pipeline (reuse webapp protocol)
 // ─────────────────────────────────────────────────────────────────────────────────
 
-function buildFrames(data: Uint8Array, isText: boolean): Uint8Array[] {
-  const result = packetize(data, isText, true);
+function buildFrames(
+  data: Uint8Array,
+  isText: boolean,
+  filename?: string,
+  mimeType?: string,
+): Uint8Array[] {
+  const result = packetize(data, isText, true, filename, mimeType);
   return scheduleFrames(result.packets, result.totalGenerations);
 }
 
@@ -124,10 +180,14 @@ function main() {
 
   let data: Uint8Array;
   let isText: boolean;
+  let filename: string | undefined;
+  let mimeType: string | undefined;
   try {
     const input = readInput();
     data = input.data;
     isText = input.isText;
+    filename = input.filename;
+    mimeType = input.mimeType;
   } catch (err: any) {
     console.error(`Error reading input: ${err.message ?? String(err)}`);
     process.exit(1);
@@ -138,7 +198,7 @@ function main() {
     process.exit(1);
   }
 
-  const packets = buildFrames(data, isText);
+  const packets = buildFrames(data, isText, filename, mimeType);
 
   // Pre-render all QR matrices to terminal strings
   const frames: string[][] = [];
