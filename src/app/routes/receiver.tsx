@@ -188,6 +188,10 @@ export function ReceiverPage() {
           if (msg.dataLength) {
             dataLengthRef.current = msg.dataLength;
           }
+          // Start timer on first detected frame
+          if (scanStartRef.current === 0 && ((msg.totalFrames ?? 0) > 0 || (msg.framesWithQR ?? 0) > 0)) {
+            scanStartRef.current = Date.now();
+          }
           if (scanStartRef.current > 0) {
             const elapsed = Date.now() - scanStartRef.current;
             setElapsedMs(elapsed);
@@ -284,7 +288,7 @@ export function ReceiverPage() {
     setThroughputKbps(0);
     setSolvedGens(0);
     setSourceGens(0);
-    scanStartRef.current = Date.now();
+    scanStartRef.current = 0;
     dataLengthRef.current = 0;
 
     try {
@@ -358,7 +362,7 @@ export function ReceiverPage() {
     setThroughputKbps(0);
     setSolvedGens(0);
     setSourceGens(0);
-    scanStartRef.current = Date.now();
+    scanStartRef.current = 0;
     dataLengthRef.current = 0;
 
     const worker = createWorker();
@@ -548,10 +552,10 @@ export function ReceiverPage() {
           {scanning && (
             <div style={S.statsBar}>
               <span>
-                scanned <span style={S.statValue}>{totalFrames}</span>
-              </span>
-              <span>
-                useful <span style={S.statValue}>{acceptedPackets}</span>
+                QRs{' '}
+                <span style={S.statValue}>
+                  {framesWithQR}/{acceptedPackets}/{neededPackets || '?'}
+                </span>
               </span>
               <span>
                 gens <span style={S.statValue}>{solvedGens}/{sourceGens}</span>
@@ -615,10 +619,10 @@ export function ReceiverPage() {
           {scanning && (
             <div style={S.statsBar}>
               <span>
-                scanned <span style={S.statValue}>{totalFrames}</span>
-              </span>
-              <span>
-                useful <span style={S.statValue}>{acceptedPackets}</span>
+                QRs{' '}
+                <span style={S.statValue}>
+                  {framesWithQR}/{acceptedPackets}/{neededPackets || '?'}
+                </span>
               </span>
               <span>
                 gens <span style={S.statValue}>{solvedGens}/{sourceGens}</span>
