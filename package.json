@@ -38,16 +38,16 @@
     "rlnc",
     "fountain-code"
   ],
-  "author": "Alex",
+  "author": "Hermit",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR_USERNAME/qr-stream.git"
+    "url": "git+https://github.com/hermitm0nk/qr-stream.git"
   },
   "bugs": {
-    "url": "https://github.com/YOUR_USERNAME/qr-stream/issues"
+    "url": "https://github.com/hermitm0nk/qr-stream/issues"
   },
-  "homepage": "https://github.com/YOUR_USERNAME/qr-stream#readme",
+  "homepage": "https://github.com/hermitm0nk/qr-stream#readme",
   "devDependencies": {
     "@preact/preset-vite": "2",
     "@types/bun": "latest",
