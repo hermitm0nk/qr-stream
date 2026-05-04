@@ -2,7 +2,7 @@
 
 Transfer files and text between devices by displaying an animated sequence of QR codes and reading it with a camera. No network, no Bluetooth, no cables - just light.
 
-**Live demo:** [https://230590.xyz/hermes-web-demos/qr-transfer/](https://230590.xyz/hermes-web-demos/qr-transfer/)
+**Live demo:** [https://hermitm0nk.github.io/qr-stream/](https://hermitm0nk.github.io/qr-stream/)
 
 ---
 
