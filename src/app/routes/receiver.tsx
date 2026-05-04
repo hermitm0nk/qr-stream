@@ -155,7 +155,6 @@ export function ReceiverPage() {
   const [totalFrames, setTotalFrames] = useState(0);
   const [framesWithQR, setFramesWithQR] = useState(0);
   const [acceptedPackets, setAcceptedPackets] = useState(0);
-  const [neededPackets, setNeededPackets] = useState(0);
   const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
   const [receivedText, setReceivedText] = useState('');
   const [error, setError] = useState('');
@@ -182,7 +181,6 @@ export function ReceiverPage() {
           setTotalFrames(msg.totalFrames ?? 0);
           setFramesWithQR(msg.framesWithQR ?? 0);
           setAcceptedPackets(msg.acceptedPackets ?? 0);
-          setNeededPackets(msg.neededPackets ?? 0);
           setSolvedGens(msg.solvedGenerations ?? 0);
           setSourceGens(msg.sourceGenerations ?? 0);
           if (msg.dataLength) {
@@ -283,7 +281,6 @@ export function ReceiverPage() {
     setTotalFrames(0);
     setFramesWithQR(0);
     setAcceptedPackets(0);
-    setNeededPackets(0);
     setElapsedMs(0);
     setThroughputKbps(0);
     setSolvedGens(0);
@@ -357,7 +354,6 @@ export function ReceiverPage() {
     setTotalFrames(0);
     setFramesWithQR(0);
     setAcceptedPackets(0);
-    setNeededPackets(0);
     setElapsedMs(0);
     setThroughputKbps(0);
     setSolvedGens(0);
@@ -552,13 +548,13 @@ export function ReceiverPage() {
           {scanning && (
             <div style={S.statsBar}>
               <span>
-                QRs{' '}
                 <span style={S.statValue}>
-                  {framesWithQR}/{acceptedPackets}/{neededPackets || '?'}
-                </span>
+                  {framesWithQR}/{solvedGens}/{sourceGens}
+                </span>{' '}
+                gens
               </span>
               <span>
-                gens <span style={S.statValue}>{solvedGens}/{sourceGens}</span>
+                pkts <span style={S.statValue}>{acceptedPackets}</span>
               </span>
               <span>
                 time <span style={S.statValue}>{formatDuration(elapsedMs)}</span>
@@ -619,13 +615,13 @@ export function ReceiverPage() {
           {scanning && (
             <div style={S.statsBar}>
               <span>
-                QRs{' '}
                 <span style={S.statValue}>
-                  {framesWithQR}/{acceptedPackets}/{neededPackets || '?'}
-                </span>
+                  {framesWithQR}/{solvedGens}/{sourceGens}
+                </span>{' '}
+                gens
               </span>
               <span>
-                gens <span style={S.statValue}>{solvedGens}/{sourceGens}</span>
+                pkts <span style={S.statValue}>{acceptedPackets}</span>
               </span>
               <span>
                 time <span style={S.statValue}>{formatDuration(elapsedMs)}</span>

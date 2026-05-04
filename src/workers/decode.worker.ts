@@ -251,14 +251,12 @@ function reconstructData(state: DecodeState): void {
 function reportProgress(state: DecodeState): void {
   const totalGens = state.totalGenerations;
   const solvedGens = state.solvedGenerations.size;
-  const needed = state.sourceGenerations > 0 ? K * state.sourceGenerations : 0;
 
-  self.postMessage({
+    self.postMessage({
     type: 'progress',
     totalFrames: state.stats.totalFrames,
     framesWithQR: state.stats.framesWithQR,
     acceptedPackets: state.stats.acceptedPackets,
-    neededPackets: needed,
     receivedPackets: state.receivedPackets,
     solvedGenerations: solvedGens,
     totalGenerations: totalGens,
