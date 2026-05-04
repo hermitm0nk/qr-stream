@@ -1,6 +1,6 @@
 {
   "name": "qr-stream",
-  "version": "0.7.0",
+  "version": "0.8.2",
   "description": "Transfer files and text via animated QR codes \u2014 CLI and web app",
   "type": "module",
   "main": "dist/qr-stream.js",

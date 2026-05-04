@@ -89,6 +89,8 @@ src/
 │   └── gifenc.d.ts          # Type declarations for gifenc
 ├── cli/
 │   ├── qr-stream.ts         # CLI entry point (terminal QR display)
+│   │                           # stdin  → isText=true (text mode)
+│   │                           # <file> → isText=false, embeds filename+MIME
 │   ├── terminal_raster.ts   # Half-block Unicode renderer
 │   └── static_server.ts     # Built-in preview server (--serve)
 ├── index.html               # Single-page app entry
@@ -324,6 +326,18 @@ GIF is universally supported, requires no codecs, and every frame is a full stil
 - **Encode worker:** packetization + scheduling is CPU-bound and blocks the main thread for large files.
 - **GIF worker:** GIF encoding (LZW) is CPU-bound.
 - **Decode worker:** RLNC Gaussian elimination and QR decoding run at 5 fps and must not freeze the UI.
+
+### Why floor(3%) for outer RS instead of always having parity?
+
+Outer RS overhead is `Math.floor(sourceGenerations × 0.03)`:
+- **G ≤ 33:** 0 parity generations — small files recover fast (no wasted round-robin slots).
+- **G ≥ 34:** 1+ parity generations — protects against whole-generation loss (e.g. a camera burst-drop at the wrong moment).
+
+Using `Math.floor` (not `Math.ceil`) ensures small files genuinely get zero parity. At G=34 the overhead is ~3% as intended.
+
+### Why neededPackets = K × totalGenerations instead of K × sourceGenerations?
+
+The frame scheduler interleaves symbols round-robin across **all** generations (source + parity). You can't receive packets selectively — every cycle of the GIF gives one symbol to each generation. So the practical minimum to decode is `K × totalGenerations`, which accounts for the interleaving overhead. This makes the progress indicator match reality (e.g. 2 source + 1 parity = 48 needed, not 32).
 
 ---
 
