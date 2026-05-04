@@ -168,11 +168,12 @@ describe('CLI Screen Helpers', () => {
 describe('CLI Help Flag', () => {
   it('should not throw when help text is constructed', () => {
     const helpText = `
-QR Terminal Display – encode text or a file into a looping QR-code sequence.
+QR Stream \u2013 encode text or a file into a looping QR-code sequence.
 
 Usage:
-  qr-terminal [file]           read from file
-  echo "text" | qr-terminal    read from stdin
+  qr-stream [file]             read from file
+  echo "text" | qr-stream      read from stdin
+  qr-stream --serve            start web app preview server
 
 Controls:
   q, Q         quit

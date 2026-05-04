@@ -1,14 +1,15 @@
 {
-  "name": "qr-transfer-terminal",
-  "version": "0.5.0",
-  "description": "Transfer files and text via animated QR codes — CLI and web app",
+  "name": "qr-stream",
+  "version": "0.6.0",
+  "description": "Transfer files and text via animated QR codes \u2014 CLI and web app",
   "type": "module",
-  "main": "dist/qr-terminal.js",
+  "main": "dist/qr-stream.js",
   "bin": {
-    "qr-terminal": "dist/qr-terminal.js"
+    "qr-stream": "dist/qr-stream.js"
   },
   "files": [
-    "dist/qr-terminal.js",
+    "dist/",
+    "src/",
     "README.md",
     "LICENSE"
   ],
@@ -21,9 +22,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "cli": "bun run src/cli/qr-terminal.ts",
-    "cli:file": "bun run src/cli/qr-terminal.ts",
-    "build:cli": "esbuild src/cli/qr-terminal.ts --bundle --platform=node --target=node18 --outfile=dist/qr-terminal.js --format=esm --external:node:*",
+    "cli": "bun run src/cli/qr-stream.ts",
+    "cli:file": "bun run src/cli/qr-stream.ts",
+    "build:cli": "esbuild src/cli/qr-stream.ts --bundle --platform=node --target=node18 --outfile=dist/qr-stream.js --format=esm --external:node:*",
     "prepublishOnly": "npm run build:cli"
   },
   "keywords": [
@@ -41,12 +42,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR_USERNAME/qr-transfer-terminal.git"
+    "url": "git+https://github.com/YOUR_USERNAME/qr-stream.git"
   },
   "bugs": {
-    "url": "https://github.com/YOUR_USERNAME/qr-transfer-terminal/issues"
+    "url": "https://github.com/YOUR_USERNAME/qr-stream/issues"
   },
-  "homepage": "https://github.com/YOUR_USERNAME/qr-transfer-terminal#readme",
+  "homepage": "https://github.com/YOUR_USERNAME/qr-stream#readme",
   "devDependencies": {
     "@preact/preset-vite": "2",
     "@types/bun": "latest",

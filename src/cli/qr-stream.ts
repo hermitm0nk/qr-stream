@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * QR Terminal Display
+ * QR Stream CLI
  *
  * Displays a sequence of QR codes in the terminal for text/file transfer.
  * Reads text from stdin or a file argument, encodes it using the same
@@ -8,10 +8,11 @@
  * interrupted.
  *
  * Usage:
- *   qr-terminal [file]              # read from file
- *   echo "text" | qr-terminal       # read from stdin
- *   npx qr-terminal [file]          # via npx
- *   bunx qr-terminal [file]         # via bunx
+ *   qr-stream [file]              # read from file
+ *   echo "text" | qr-stream       # read from stdin
+ *   npx qr-stream [file]          # via npx
+ *   bunx qr-stream [file]         # via bunx
+ *   qr-stream --serve             # start web app preview server
  */
 
 import { readFileSync, existsSync, openSync, closeSync } from 'fs';
@@ -29,6 +30,7 @@ import {
   renderToTerminal,
   moveCursorUp,
 } from './terminal_raster';
+import { startServer } from './static_server';
 
 const FPS_MS = 100;
 
@@ -37,13 +39,14 @@ const FPS_MS = 100;
 // ─────────────────────────────────────────────────────────────────────────────────
 
 const HELP_TEXT = `
-QR Terminal Display – encode text or a file into a looping QR-code sequence.
+QR Stream – encode text or a file into a looping QR-code sequence.
 
 Usage:
-  qr-terminal [file]              read from file
-  echo "text" | qr-terminal       read from stdin
-  npx qr-terminal [file]          via npx
-  bunx qr-terminal [file]         via bunx
+  qr-stream [file]                read from file
+  echo "text" | qr-stream         read from stdin
+  npx qr-stream [file]            via npx
+  bunx qr-stream [file]           via bunx
+  qr-stream --serve               start web app preview server
 
 Controls:
   q, Q         quit
@@ -96,9 +99,26 @@ function buildFrames(data: Uint8Array): Uint8Array[] {
 
 function main() {
   const args = process.argv.slice(2);
+
   if (args.includes('-h') || args.includes('--help')) {
     showHelp();
     process.exit(0);
+  }
+
+  if (args.includes('--serve') || args.includes('-s')) {
+    const port = Number(process.env.PORT) || 3000;
+    const server = startServer(port);
+
+    function shutdown() {
+      console.log('\nShutting down server...');
+      server.close(() => process.exit(0));
+      // Force exit after timeout if connections keep it open
+      setTimeout(() => process.exit(0), 2000);
+    }
+
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+    return;
   }
 
   let data: Uint8Array;
@@ -155,7 +175,7 @@ function main() {
     if (ttyFd !== null) {
       try { closeSync(ttyFd); } catch {}
     }
-    console.log('QR terminal display stopped.');
+    console.log('QR stream display stopped.');
     process.exit(0);
   }
 
