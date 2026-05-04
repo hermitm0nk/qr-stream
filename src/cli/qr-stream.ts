@@ -32,6 +32,9 @@ import {
 } from './terminal_raster';
 import { startServer } from './static_server';
 
+/** Must match the `base` in vite.config.ts — assets are baked with this prefix. */
+const VITE_BASE = '/hermes-web-demos/qr-transfer/';
+
 const FPS_MS = 100;
 
 // ─────────────────────────────────────────────────────────────────────────────────
@@ -47,6 +50,10 @@ Usage:
   npx qr-stream [file]            via npx
   bunx qr-stream [file]           via bunx
   qr-stream --serve               start web app preview server
+
+Server flags (with --serve):
+  --port <n>    TCP port (default: 3000, also: PORT env)
+  --host <ip>   Bind address (default: 0.0.0.0)
 
 Controls:
   q, Q         quit
@@ -163,8 +170,29 @@ function main() {
   }
 
   if (args.includes('--serve') || args.includes('-s')) {
-    const port = Number(process.env.PORT) || 3000;
-    const server = startServer(port);
+    // Parse --port <n> (default 3000)
+    let port = 3000;
+    const portIdx = args.indexOf('--port');
+    if (portIdx !== -1 && portIdx + 1 < args.length) {
+      port = Number(args[portIdx + 1]);
+      if (isNaN(port) || port < 1 || port > 65535) {
+        console.error('Error: --port must be a number between 1 and 65535');
+        process.exit(1);
+      }
+    }
+    // Also support PORT env var (overridable by --port)
+    if (process.env.PORT && args.indexOf('--port') === -1) {
+      port = Number(process.env.PORT);
+    }
+
+    // Parse --host <ip> (default 0.0.0.0)
+    let host: string | undefined;
+    const hostIdx = args.indexOf('--host');
+    if (hostIdx !== -1 && hostIdx + 1 < args.length) {
+      host = args[hostIdx + 1];
+    }
+
+    const server = startServer(port, host, VITE_BASE);
 
     function shutdown() {
       console.log('\nShutting down server...');

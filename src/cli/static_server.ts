@@ -45,8 +45,24 @@ function findWebRoot(): string {
   );
 }
 
-export function startServer(port: number): Server {
+/**
+ * Create a static HTTP server for the built web app.
+ *
+ * @param port  TCP port to listen on
+ * @param host  Host address to bind to (default: '0.0.0.0')
+ * @param base  URL path prefix baked into the assets (e.g. '/my-subpath/'), or empty for root
+ */
+export function startServer(
+  port: number,
+  host?: string,
+  base?: string,
+): Server {
   const root = findWebRoot();
+  const basePath = base || '';
+  // Normalise: ensure base starts with / and does not end with /
+  const normalisedBase = basePath
+    ? '/' + basePath.replace(/^\/+|\/+$/g, '')
+    : '';
 
   const server = createServer((req, res) => {
     let pathname = req.url ?? '/';
@@ -54,8 +70,16 @@ export function startServer(port: number): Server {
     const qIdx = pathname.indexOf('?');
     if (qIdx !== -1) pathname = pathname.slice(0, qIdx);
 
+    // Strip base prefix if present (so /base/assets/foo.js → /assets/foo.js)
+    let resolved = pathname;
+    if (normalisedBase && pathname.startsWith(normalisedBase + '/')) {
+      resolved = pathname.slice(normalisedBase.length);
+    } else if (normalisedBase === pathname) {
+      resolved = '/';
+    }
+
     // Security: prevent directory traversal
-    const safePath = pathname.replace(/\.{2,}/g, '');
+    const safePath = resolved.replace(/\.{2,}/g, '');
     let filePath = join(root, safePath);
 
     if (!existsSync(filePath) || !filePath.startsWith(root)) {
@@ -92,8 +116,9 @@ export function startServer(port: number): Server {
     res.end(content);
   });
 
-  server.listen(port, () => {
-    console.log(`QR Stream web app serving at http://localhost:${port}`);
+  server.listen(port, host ?? '0.0.0.0', () => {
+    const addr = host ?? '0.0.0.0';
+    console.log(`QR Stream web app serving at http://${addr}:${port}`);
   });
 
   return server;

@@ -49,10 +49,12 @@ The terminal clears, enters an alternate screen buffer, and displays the QR fram
 ### Start the web app preview server
 
 ```bash
-qr-stream --serve
+qr-stream --serve                    start web app preview server
+qr-stream --serve --port 8080        custom port
+qr-stream --serve --host 127.0.0.1   localhost only
 ```
 
-Serves the built web UI on `http://localhost:3000` (default). Change the port with the `PORT` environment variable:
+Serves the built web UI. Defaults to port 3000 and binds `0.0.0.0`. Change the port with the `--port` flag or `PORT` environment variable:
 
 ```bash
 PORT=8080 qr-stream --serve
@@ -64,8 +66,10 @@ The server resolves the `dist/` directory automatically, so it works from both t
 
 | Flag | Description |
 |------|-------------|
-| `-h`, `--help` | Show usage information |
-| `-s`, `--serve` | Start the web preview server |
+| `-h`, `--help` | Show usage information                               |
+| `-s`, `--serve` | Start the web preview server                         |
+| `--port <n>`   | TCP port for --serve (default: 3000, also: PORT env) |
+| `--host <ip>`  | Bind address for --serve (default: 0.0.0.0)          |
 
 ---
 
