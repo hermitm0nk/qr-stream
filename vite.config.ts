@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
+import { resolve } from 'path';
 
 export default defineConfig({
   plugins: [
@@ -9,7 +10,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      '@': '/home/aiagent/projects/qr/src',
+      '@': resolve(__dirname, 'src'),
     },
   },
   test: {
