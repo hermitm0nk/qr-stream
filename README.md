@@ -1,8 +1,17 @@
 # QR Stream
 
-Transfer files and text between devices by displaying an animated sequence of QR codes and reading it with a camera. No network, no Bluetooth, no cables - just light.
+Transfer files and text between devices by displaying an animated sequence of QR codes and reading it with a camera. No network, no Bluetooth, no cables, 100% private. Packed as both the web app (send & receive) and CLI (send only).
 
 **Live demo:** [https://hermitm0nk.github.io/qr-stream/](https://hermitm0nk.github.io/qr-stream/)
+
+* Web app works purely in browser, no server, no telemetry, 100% private
+* Mobile friendly & browser agnostic
+* 8mb file size limit (<100kb recommended)
+* Preserves filename of files, instantly shows received text
+* Applies compression in the background - typically saves 3x-10x bandwidth on text files
+* outer Reed-Solomon redundancy & fountain codes for efficiency in case of dropped frames
+* CRC32 checksums for consistency
+* Save as gif, embed anywhere with gif support
 
 ---
 
